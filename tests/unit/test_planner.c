@@ -308,7 +308,7 @@ static void test_planner(void)
     req.context = 256;
     const int rc = eng_plan(&p, &hw, &m, &req);
     {
-        char d[200];
+        char d[sizeof p.problem + 16];
         snprintf(d, sizeof d, "%s", rc == 0 ? "viable" : p.problem);
         /* Either answer is defensible; what is NOT acceptable is planning a run that
          * cannot fit. So assert the plan is self-consistent whichever way it went. */

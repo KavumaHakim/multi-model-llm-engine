@@ -90,7 +90,7 @@ LDFLAGS  ?= -lm $(OMP_LDFLAGS) -pthread
 # rather than path-qualified includes, which keeps them relocatable.
 INCLUDES := -Iinclude -Iinclude/k3 -Ithird_party \
             -Isrc/core -Isrc/io -Isrc/cache -Isrc/model -Isrc/tokenizer \
-            -Isrc/tensor -Isrc/storage -Isrc/formats -Isrc/runtime
+            -Isrc/tensor -Isrc/storage -Isrc/formats -Isrc/runtime -Isrc/kernels
 
 # ----------------------------------------------------------------------------- files --
 # The generic runtime layer. Model-independent by construction: nothing under src/tensor,
@@ -99,7 +99,8 @@ INCLUDES := -Iinclude -Iinclude/k3 -Ithird_party \
 GENERIC_SRC := src/tensor/dtype.c src/tensor/tensor.c \
                src/storage/file.c src/storage/cache.c src/storage/streamer.c \
                src/formats/safetensors.c \
-               src/runtime/hwinfo.c src/runtime/memory.c src/runtime/planner.c
+               src/runtime/hwinfo.c src/runtime/memory.c src/runtime/planner.c \
+               src/kernels/kernel.c src/kernels/kernel_avx2.c
 GENERIC_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(GENERIC_SRC))
 
 ENGINE_SRC := src/core/k3_ops.c \
@@ -113,7 +114,7 @@ CLI_BIN    := $(BIN)/k3
 
 # Tests that need no checkpoint. These run in CI on every push.
 UNIT_TESTS := test_ops test_cache test_st test_cfg test_tok scale_test k3_model \
-              test_tensor test_cache_generic test_streamer test_planner
+              test_tensor test_cache_generic test_streamer test_planner test_kernels
 # Tests that need real shards. Built and run by `make test-all` with SHARD_DIR set;
 # see the weights-test target below.
 WEIGHT_TESTS := test_expert test_real_layer
@@ -168,6 +169,18 @@ $(BIN)/test_planner: tests/unit/test_planner.c $(BUILD)/src/runtime/hwinfo.o \
                      $(BUILD)/src/runtime/memory.o $(BUILD)/src/runtime/planner.o | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
+$(BIN)/test_kernels: tests/unit/test_kernels.c $(BUILD)/src/kernels/kernel.o \
+                     $(BUILD)/src/kernels/kernel_avx2.o | $(BIN)
+	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+
+# The bit-identity gate is only meaningful if the AVX2 code is present WITHOUT -mavx2 on
+# the command line -- that is the whole point of the per-function target attributes, and
+# it is what lets one binary serve CPUs that differ. Building this target portably and
+# running it proves the dispatcher is doing the work, not the compiler flags.
+$(BIN)/test_kernels_portable: tests/unit/test_kernels.c src/kernels/kernel.c \
+                              src/kernels/kernel_avx2.c | $(BIN)
+	$(CC) -O2 -std=gnu99 $(WARN) $(INCLUDES) $^ -o $@ -lm
+
 $(BIN)/test_st: tests/unit/test_st.c $(BUILD)/src/io/k3_st.o | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
@@ -219,6 +232,9 @@ test: $(TEST_BINS)
 	@echo "== generic cache ==";     ./$(BIN)/test_cache_generic
 	@echo "== block streamer ==";    ./$(BIN)/test_streamer $(BUILD)
 	@echo "== planner ==";           ./$(BIN)/test_planner
+	@echo "== cpu kernels ==";       ./$(BIN)/test_kernels
+	@echo "== cpu kernels (no -mavx2, runtime dispatch only) =="; \
+	  $(MAKE) --no-print-directory $(BIN)/test_kernels_portable && ./$(BIN)/test_kernels_portable | tail -3
 	@echo "== real dimensions ==";   ./$(BIN)/scale_test
 	@echo "== full-model oracle =="; ./$(BIN)/k3_model $(FIXTURES)
 	@echo
