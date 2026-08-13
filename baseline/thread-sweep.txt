@@ -1,0 +1,61 @@
+threads,notes
+--- OMP_NUM_THREADS=1 ---
+kernel benchmark at REAL Kimi K3 dimensions
+built WITH AVX2
+
+bf16 matmul  12288 x 7168    155.37 ms       1.1 GFLOP/s
+             bf16  OUTPUT FNV1a = d65cab2d141bb3b8
+             trunk is 56.74 G params/token -> 100.08 s/token at this rate
+
+MXFP4 matmul  3072 x 3584     33.07 ms       0.7 GFLOP/s
+             mxfp4 OUTPUT FNV1a = a231061237b5579d
+             16 experts x 3 mats x 92 layers -> 146.05 s/token
+
+measured compute budget at the floor is about 10 s/token; whichever line
+above dominates it is the one worth vectorising.
+
+--- OMP_NUM_THREADS=2 ---
+kernel benchmark at REAL Kimi K3 dimensions
+built WITH AVX2
+
+bf16 matmul  12288 x 7168     82.35 ms       2.1 GFLOP/s
+             bf16  OUTPUT FNV1a = d65cab2d141bb3b8
+             trunk is 56.74 G params/token -> 53.05 s/token at this rate
+
+MXFP4 matmul  3072 x 3584     19.60 ms       1.1 GFLOP/s
+             mxfp4 OUTPUT FNV1a = a231061237b5579d
+             16 experts x 3 mats x 92 layers -> 86.57 s/token
+
+measured compute budget at the floor is about 10 s/token; whichever line
+above dominates it is the one worth vectorising.
+
+--- OMP_NUM_THREADS=3 ---
+kernel benchmark at REAL Kimi K3 dimensions
+built WITH AVX2
+
+bf16 matmul  12288 x 7168     61.63 ms       2.9 GFLOP/s
+             bf16  OUTPUT FNV1a = d65cab2d141bb3b8
+             trunk is 56.74 G params/token -> 39.70 s/token at this rate
+
+MXFP4 matmul  3072 x 3584     14.42 ms       1.5 GFLOP/s
+             mxfp4 OUTPUT FNV1a = a231061237b5579d
+             16 experts x 3 mats x 92 layers -> 63.68 s/token
+
+measured compute budget at the floor is about 10 s/token; whichever line
+above dominates it is the one worth vectorising.
+
+--- OMP_NUM_THREADS=4 ---
+kernel benchmark at REAL Kimi K3 dimensions
+built WITH AVX2
+
+bf16 matmul  12288 x 7168     58.28 ms       3.0 GFLOP/s
+             bf16  OUTPUT FNV1a = d65cab2d141bb3b8
+             trunk is 56.74 G params/token -> 37.54 s/token at this rate
+
+MXFP4 matmul  3072 x 3584     12.92 ms       1.7 GFLOP/s
+             mxfp4 OUTPUT FNV1a = a231061237b5579d
+             16 experts x 3 mats x 92 layers -> 57.07 s/token
+
+measured compute budget at the floor is about 10 s/token; whichever line
+above dominates it is the one worth vectorising.
+

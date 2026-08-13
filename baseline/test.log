@@ -1,0 +1,200 @@
+cc -O3 -std=gnu99 -Wall -Wextra -Wpointer-arith -Wshadow -Wvla -Wno-unused-parameter -mavx2 -mfma -fopenmp -pthread -ffp-contract=off -Iinclude -Iinclude/k3 -Ithird_party -Isrc/core -Isrc/io -Isrc/cache -Isrc/model -Isrc/tokenizer tests/unit/test_ops.c build/src/core/k3_ops.o -o bin/test_ops -lm -fopenmp -pthread
+cc -O3 -std=gnu99 -Wall -Wextra -Wpointer-arith -Wshadow -Wvla -Wno-unused-parameter -mavx2 -mfma -fopenmp -pthread -ffp-contract=off -Iinclude -Iinclude/k3 -Ithird_party -Isrc/core -Isrc/io -Isrc/cache -Isrc/model -Isrc/tokenizer tests/unit/test_cache.c build/src/cache/k3_cache.o build/src/io/k3_load.o build/src/io/k3_st.o build/src/core/k3_ops.o -o bin/test_cache -lm -fopenmp -pthread
+cc -O3 -std=gnu99 -Wall -Wextra -Wpointer-arith -Wshadow -Wvla -Wno-unused-parameter -mavx2 -mfma -fopenmp -pthread -ffp-contract=off -Iinclude -Iinclude/k3 -Ithird_party -Isrc/core -Isrc/io -Isrc/cache -Isrc/model -Isrc/tokenizer tests/unit/test_st.c build/src/io/k3_st.o -o bin/test_st -lm -fopenmp -pthread
+cc -O2 -std=c99 -Wall -Wextra -Wpointer-arith -Wshadow -Wvla -Wno-unused-parameter -Wno-unused-function -Iinclude -Iinclude/k3 -Ithird_party -Isrc/core -Isrc/io -Isrc/cache -Isrc/model -Isrc/tokenizer tests/unit/test_cfg.c src/core/k3_ops.c -o bin/test_cfg -lm
+cc -O2 -std=c99 -Wall -Wextra -Wpointer-arith -Wshadow -Wvla -Wno-unused-parameter -Wno-unused-function -Iinclude -Iinclude/k3 -Ithird_party -Isrc/core -Isrc/io -Isrc/cache -Isrc/model -Isrc/tokenizer tests/unit/test_tok.c -o bin/test_tok
+cc -O3 -std=gnu99 -Wall -Wextra -Wpointer-arith -Wshadow -Wvla -Wno-unused-parameter -mavx2 -mfma -fopenmp -pthread -ffp-contract=off -Iinclude -Iinclude/k3 -Ithird_party -Isrc/core -Isrc/io -Isrc/cache -Isrc/model -Isrc/tokenizer tests/unit/scale_test.c build/src/core/k3_ops.o -o bin/scale_test -lm -fopenmp -pthread
+cc -O3 -std=gnu99 -Wall -Wextra -Wpointer-arith -Wshadow -Wvla -Wno-unused-parameter -mavx2 -mfma -fopenmp -pthread -ffp-contract=off -Iinclude -Iinclude/k3 -Ithird_party -Isrc/core -Isrc/io -Isrc/cache -Isrc/model -Isrc/tokenizer tests/unit/k3_model.c build/src/core/k3_ops.o -o bin/k3_model -lm -fopenmp -pthread
+== op kernels ==
+Kimi K3 C ops, validated against the pure-torch reference
+fixtures: tests/fixtures/ops
+tolerance: atol=1.0e-05 rtol=1.0e-04  (from MANIFEST.json)
+
+  PASS  rmsnorm        n=384    worst=0.01x tol
+  PASS  situ_glu       n=48     worst=0.00x tol
+        bound check |out|=100.000 must be <= b1*b2=100.0 : ok
+  PASS  shortconv      n=320    worst=0.01x tol
+  PASS  conv_state     n=192    worst=0.00x tol
+  PASS  conv_continuation n=64     worst=0.00x tol
+  PASS  kda_decay      H=4 D=16 tok=4  max|dg|=4.768e-07 max|dalpha|=1.788e-07 (drives k3_kda_decay)
+  PASS  kda_recur1_out n=64     worst=0.01x tol
+  PASS  kda_recur1_state n=1024   worst=0.00x tol
+  PASS  kda_recur8_out n=512    worst=0.04x tol
+  PASS  kda_recur8_state n=1024   worst=0.04x tol
+  PASS  router         rows=6    k=2  index sets match, worst weight=0.00x tol
+  PASS  mla            n=768    worst=0.08x tol
+        H=4 qh=32 (nope 24 + rope 8) v=16 kv_lora=32 scale=0.176777
+  PASS  moe            n=384    worst=0.53x tol
+        hidden=128 latent=64 inter=48 experts=8 top2 shared=2
+  PASS  mxfp4          64 rows x 3584 elems, EXACT on released checkpoint bytes
+  PASS  matmul_bf16   n=129    bit-identical to k3_matmul
+  PASS  kda_layer1_out n=128    worst=0.02x tol
+  PASS  kda_layer1_state n=1024   worst=0.01x tol
+  PASS  kda_layer8_out n=1024   worst=0.50x tol
+  PASS  kda_layer8_state n=1024   worst=0.02x tol
+  PASS  layer_kda      n=512    worst=0.58x tol
+        layer 1 (KDA), blocks 2 -> 2, boundary=no
+  PASS  layer_mla      n=512    worst=0.21x tol
+        layer 3 (MLA), blocks 2 -> 3, boundary=YES, prefix_sum cleared
+  PASS  attn_res       n=512    worst=0.02x tol
+
+22 passed, 0 failed, 0 skipped
+== streaming cache ==
+k3_cache: budget 0.00 GB gives 1 slots of 0.01 MB, but top-4 needs at least 5. A cache smaller than one token's working set would evict an expert that is still being multiplied.
+k3_cache: budget 0.00 GB gives 2 slots of 0.01 MB, but top-4 needs at least 5. A cache smaller than one token's working set would evict an expert that is still being multiplied.
+k3_cache: budget 0.00 GB gives 4 slots of 0.01 MB, but top-4 needs at least 5. A cache smaller than one token's working set would evict an expert that is still being multiplied.
+streaming expert cache, 144 tensors from 1 shard(s)
+
+  PASS  cache under pressure               8 slots for 24 experts, top-4
+  PASS  serial reads are byte-exact        0 of 72 reads wrong
+  PASS  batch prefetch is byte-exact       6 batches of 4, 0 wrong
+  PASS  prefetch_reads <= hits             requests 24, hits 24, prefetch 24
+  PASS  mixed batch and serial             0 of 24 wrong
+
+CACHE TESTS PASSED
+== safetensors ==
+opening tests/fixtures/st
+  shards        : 2
+  tensors       : 13
+  indexed bytes : 0.00 GB
+  index built in: 0.000 s  (14.6 us/tensor)
+  dtypes        : U8 5, BF16 1, F16 1, F32 6
+  hash buckets  : 1024 for 13 tensors (load 0.01)
+  round trip    : 13/13 resolve to themselves
+  lookup cost   : 71 ns each (13 lookups in 0.000 s)
+  absent names  : 3/3 correctly return NULL
+  wrote build/st_index.json
+  plain.f32.2d
+    F32 256 elems, 0.00 MB in 0.000 s (349 MB/s), min -9.75432 max 6.73427 mean -0.514719
+  plain.bf16.1d
+    BF16 128 elems, 0.00 MB in 0.000 s (8 MB/s), min -1.10336e+34 max 7.84245e+37 mean 6.59144e+35  <-- 3 of 128 values are non-finite (stats cover the other 125)
+  tricky.f16.1d
+    F16 64 elems, 0.00 MB in 0.000 s (9 MB/s), min -1.81641 max 2.01562 mean 0.0847861  <-- 3 of 64 values are non-finite (stats cover the other 61)
+  packed.u8.2d
+    U8 224 elems, 0.00 MB in 0.000 s (94 MB/s), min 0 max 255 mean 130.808
+  scalar.f32
+    F32 1 elems, 0.00 MB in 0.000 s (1 MB/s), min 3.5 max 3.5 mean 3.5
+  second.shard.f32
+    F32 100 elems, 0.00 MB in 0.000 s (6 MB/s), min -2.81957 max 2.53693 mean -0.292684
+  wrote st_values.json
+
+READER SELF-CHECKS PASSED (now run tools/verify_st.py for the external check)
+== config reader ==
+config: tests/fixtures/ref_k3.json (flat shape) | hidden=128 layers=13 vocab=256 | 4 MLA + 9 KDA | experts 8 top2 shared2 | latent=64
+  ok    hidden                       128
+  ok    layers                       13
+  ok    vocab                        256
+  ok    kda heads                    4
+  ok    kda head_dim                 16
+  ok    experts                      8
+  ok    topk                         2
+  ok    latent                       64
+  ok    attn_res_block               3
+  ok    situ b1                      4
+  ok    situ b2                      25
+  ok    full_attn count              4
+  ok    gate_lb (x-1)                5
+
+FIXTURE CONFIG: PASS
+== config refusals ==
+k3_cfg: tests/fixtures/cfg/no_layermap.json is missing 1 required field(s):
+    full_attn_layers
+  refusing to substitute defaults: a config this reader cannot
+  fully understand would silently produce a DIFFERENT model.
+  ok    correctly rejected tests/fixtures/cfg/no_layermap.json
+k3_cfg: tests/fixtures/cfg/bad_layer_index.json full_attn_layers[2] = 999 is outside 1..13 (the list is ONE-based)
+  ok    correctly rejected tests/fixtures/cfg/bad_layer_index.json
+k3_cfg: tests/fixtures/cfg/bad_topk.json selects top-128, but this build supports at most 64
+  (K3_MAX_TOPK in k3.h bounds the fixed-size routing arrays)
+  ok    correctly rejected tests/fixtures/cfg/bad_topk.json
+== tokenizer ==
+  NOT RUN: no tiktoken.model at /root/k3model
+           the vocabulary ships with the checkpoint, not with this
+           repository. Run: make tok TOK_FILES=/path/to/k3model
+== real dimensions ==
+Kimi K3 scale test, REAL dimensions
+hidden 7168, layers 93, heads 96, experts 896 top-16, latent 3584
+
+layer map: 69 KDA + 24 MLA = 93  (expect 69 + 24 = 93)  OK
+  last five layers: 88=KDA 89=KDA 90=KDA 91=MLA 92=MLA 
+  layer 0 dense: yes
+
+scratch requirements (floats), checked in size_t:
+  T=1     mla 69761        kda 98528        moe 45568      layer 266464       (1.07 MB)
+  T=8     mla 371272       kda 615296       moe 45568      layer 933760       (3.74 MB)
+  T=512   mla 22080064     kda 37822592     moe 45568      layer 48979072     (195.92 MB)
+  T=4096  mla 176453696    kda 302407808    moe 45568      layer 390634624    (1.56 GB)
+
+one KDA layer  : 443740384 params  (887.48 MB at bf16)
+69 KDA layers  : 61.24 GB at bf16   (KDA attention ONLY, not the whole trunk)
+full trunk     : 113.49 GB at bf16, 56,743,648,000 always-active params
+                 (measured from the shard headers, not derived here)
+one expert     : 33030144 params  (17.55 MB at MXFP4)
+all 82432 experts: 1.45 TB at MXFP4  <- streamed from NVMe
+
+per-sequence state, FIXED regardless of context:
+  KDA recurrent : 217.06 MB at bf16
+  ShortConv     : 15.26 MB at bf16
+  MLA KV        : 2.37 MB per position (24 MLA layers, EXPANDED k and v, fp32)
+                  19.38 GB at 8192 context
+                  310.04 GB at 131072 context
+
+allocating and running ONE full-width KDA layer (fp32)...
+  weights: 1.77 GB
+  ran 4 tokens in 3.03 s (756 ms/token)
+  output all finite: YES, max |y| = 0.000003
+  state non-zero   : yes
+
+SCALE TEST PASSED
+== full-model oracle ==
+Kimi K3 pure-C engine, full-model oracle gate
+fixtures: tests/fixtures
+
+config: tests/fixtures/ref_k3.json (flat shape) | hidden=128 layers=13 vocab=256 | 4 MLA + 9 KDA | experts 8 top2 shared2 | latent=64
+layer map (0-based): KKKMKKKMKKKMM   (M=MLA, K=KDA; dense layer = 0)
+attn_res boundaries at: 0 3 6 9 12 
+
+checkpoint: 628 tensors loaded
+prompt_ids 12, full_ids 32, tf_pred 32
+
+all layer weights bound
+
+GATE 1  teacher forcing : 32/32 positions match tf_pred
+        generated span  : 20/20  <- must be exact
+GATE 2  greedy decode   : 20/20 generated tokens match full_ids
+GATE 3  incremental    : 20/20 generated tokens match full_ids  <- KV cache + carried KDA state
+
+VERDICT: ENGINE MATCHES THE REFERENCE EXACTLY
+
+NOTE: tokenizer parity did NOT run; see above. Everything else did.
+ALL WEIGHTLESS TESTS PASSED
+	Command being timed: "make ARCH=-mavx2 -mfma test"
+	User time (seconds): 68.77
+	System time (seconds): 17.89
+	Percent of CPU this job got: 162%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:53.19
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 1743736
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 1
+	Minor (reclaiming a frame) page faults: 531058
+	Voluntary context switches: 8837
+	Involuntary context switches: 706
+	Swaps: 0
+	File system inputs: 1520
+	File system outputs: 2856
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+make test exit code: 0
+  present: op kernels
+  present: streaming cache
+  present: safetensors
+  present: config reader
+  present: real dimensions
+  present: full-model oracle

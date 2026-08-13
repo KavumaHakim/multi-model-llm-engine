@@ -1,0 +1,13 @@
+kernel benchmark at REAL Kimi K3 dimensions
+built WITH AVX2
+
+bf16 matmul  12288 x 7168     42.68 ms       4.1 GFLOP/s
+             bf16  OUTPUT FNV1a = d65cab2d141bb3b8
+             trunk is 56.74 G params/token -> 27.49 s/token at this rate
+
+MXFP4 matmul  3072 x 3584     13.86 ms       1.6 GFLOP/s
+             mxfp4 OUTPUT FNV1a = a231061237b5579d
+             16 experts x 3 mats x 92 layers -> 61.23 s/token
+
+measured compute budget at the floor is about 10 s/token; whichever line
+above dominates it is the one worth vectorising.

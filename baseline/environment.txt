@@ -1,0 +1,36 @@
+date            : 2026-08-13T15:16:33Z
+uname           : Linux HAKIM 6.18.33.2-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Thu Jun 18 21:54:43 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+git commit      : n/a
+
+--- cpu ---
+  CPU(s):                                  4
+  Model name:                              Intel(R) Core(TM) i5-6300U CPU @ 2.40GHz
+  Thread(s) per core:                      2
+  Core(s) per socket:                      2
+  Socket(s):                               1
+  Flags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss ht syscall nx pdpe1gb rdtscp lm arch_perfmon rep_good nopl xtopology cpuid tsc_known_freq pni pclmulqdq vmx ssse3 fma cx16 pdcm pcid sse4_1 sse4_2 movbe popcnt aes xsave avx f16c rdrand hypervisor lahf_lm abm 3dnowprefetch pti ssbd ibrs ibpb stibp tpr_shad
+  L1d cache:                               64 KiB (2 instances)
+  L1i cache:                               64 KiB (2 instances)
+  L2 cache:                                512 KiB (2 instances)
+  L3 cache:                                3 MiB (1 instance)
+  Vulnerability L1tf:                      Mitigation; PTE Inversion; VMX conditional cache flushes, SMT vulnerable
+
+--- avx2/fma present? ---
+avx2 fma 
+
+--- memory ---
+               total        used        free      shared  buff/cache   available
+Mem:           3.8Gi       454Mi       2.9Gi       3.4Mi       552Mi       3.3Gi
+Swap:          1.0Gi          0B       1.0Gi
+MemTotal:        3934832 kB
+MemAvailable:    3469680 kB
+
+--- disk ---
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sdd       1007G  1.9G  954G   1% /
+
+--- toolchain ---
+cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+Copyright (C) 2023 Free Software Foundation, Inc.
+GNU Make 4.3
+Python 3.12.3

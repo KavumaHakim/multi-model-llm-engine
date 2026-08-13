@@ -1,0 +1,80 @@
+--- ./bin/test_ops tests/fixtures/ops ---
+    #5 0x637e416727b1 in json_parse third_party/json.h:164
+    #6 0x637e41678278 in t_situ tests/unit/test_ops.c:152
+    #7 0x637e41678278 in main tests/unit/test_ops.c:877
+    #8 0x73533602a1c9  (/lib/x86_64-linux-gnu/libc.so.6+0x2a1c9) (BuildId: 328820b908de8ea1ef79afa8995e302e819163d7)
+    #9 0x73533602a28a in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x2a28a) (BuildId: 328820b908de8ea1ef79afa8995e302e819163d7)
+    #10 0x637e4166d8e4 in _start (/root/engine/bin/test_ops+0x348e4) (BuildId: bb00ebfd067884780fd67876bc4b90f9054d7075)
+
+Indirect leak of 18 byte(s) in 4 object(s) allocated from:
+    #0 0x735336cfd9c7 in malloc ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:69
+    #1 0x637e4166e5d3 in j_dup third_party/json.h:51
+    #2 0x637e4166e5d3 in j_parse_str_raw third_party/json.h:107
+    #3 0x637e41670ebb in j_parse_val third_party/json.h:123
+    #4 0x637e416727b1 in json_parse third_party/json.h:164
+    #5 0x637e41677d2d in t_rmsnorm tests/unit/test_ops.c:134
+    #6 0x637e41677d2d in main tests/unit/test_ops.c:876
+    #7 0x73533602a1c9  (/lib/x86_64-linux-gnu/libc.so.6+0x2a1c9) (BuildId: 328820b908de8ea1ef79afa8995e302e819163d7)
+    #8 0x73533602a28a in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x2a28a) (BuildId: 328820b908de8ea1ef79afa8995e302e819163d7)
+    #9 0x637e4166d8e4 in _start (/root/engine/bin/test_ops+0x348e4) (BuildId: bb00ebfd067884780fd67876bc4b90f9054d7075)
+
+SUMMARY: AddressSanitizer: 65636613 byte(s) leaked in 992571 allocation(s).
+--- ./bin/test_st tests/fixtures/st /tmp/idx.json plain.f32.2d plain.bf16.1d tricky.f16.1d packed.u8.2d scalar.f32 second.shard.f32 ---
+  hash buckets  : 1024 for 13 tensors (load 0.01)
+  round trip    : 13/13 resolve to themselves
+  lookup cost   : 275 ns each (13 lookups in 0.000 s)
+  absent names  : 3/3 correctly return NULL
+  wrote /tmp/idx.json
+  plain.f32.2d
+    F32 256 elems, 0.00 MB in 0.000 s (123 MB/s), min -9.75432 max 6.73427 mean -0.514719
+  plain.bf16.1d
+    BF16 128 elems, 0.00 MB in 0.001 s (0 MB/s), min -1.10336e+34 max 7.84245e+37 mean 6.59144e+35  <-- 3 of 128 values are non-finite (stats cover the other 125)
+  tricky.f16.1d
+    F16 64 elems, 0.00 MB in 0.001 s (0 MB/s), min -1.81641 max 2.01562 mean 0.0847861  <-- 3 of 64 values are non-finite (stats cover the other 61)
+  packed.u8.2d
+    U8 224 elems, 0.00 MB in 0.001 s (0 MB/s), min 0 max 255 mean 130.808
+  scalar.f32
+    F32 1 elems, 0.00 MB in 0.000 s (1 MB/s), min 3.5 max 3.5 mean 3.5
+  second.shard.f32
+    F32 100 elems, 0.00 MB in 0.000 s (61 MB/s), min -2.81957 max 2.53693 mean -0.292684
+  wrote st_values.json
+
+READER SELF-CHECKS PASSED (now run tools/verify_st.py for the external check)
+--- ./bin/test_cfg fixture tests/fixtures/ref_k3.json ---
+config: tests/fixtures/ref_k3.json (flat shape) | hidden=128 layers=13 vocab=256 | 4 MLA + 9 KDA | experts 8 top2 shared2 | latent=64
+  ok    hidden                       128
+  ok    layers                       13
+  ok    vocab                        256
+  ok    kda heads                    4
+  ok    kda head_dim                 16
+  ok    experts                      8
+  ok    topk                         2
+  ok    latent                       64
+  ok    attn_res_block               3
+  ok    situ b1                      4
+  ok    situ b2                      25
+  ok    full_attn count              4
+  ok    gate_lb (x-1)                5
+
+FIXTURE CONFIG: PASS
+--- ./bin/k3_model tests/fixtures ---
+    #5 0x64a60fbf15bb in json_parse third_party/json.h:164
+    #6 0x64a60fbf414b in store_open tests/unit/k3_model.c:58
+    #7 0x64a60fbf414b in main tests/unit/k3_model.c:248
+    #8 0x7c6db282a1c9  (/lib/x86_64-linux-gnu/libc.so.6+0x2a1c9) (BuildId: 328820b908de8ea1ef79afa8995e302e819163d7)
+    #9 0x7c6db282a28a in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x2a28a) (BuildId: 328820b908de8ea1ef79afa8995e302e819163d7)
+    #10 0x64a60fbec8a4 in _start (/root/engine/bin/k3_model+0x3b8a4) (BuildId: b2d41ce562a5562093f3eb70e942bd5f51c8e13c)
+
+Indirect leak of 38 byte(s) in 4 object(s) allocated from:
+    #0 0x7c6db34fd9c7 in malloc ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:69
+    #1 0x64a60fbed3dd in j_dup third_party/json.h:51
+    #2 0x64a60fbed3dd in j_parse_str_raw third_party/json.h:107
+    #3 0x64a60fbefcc5 in j_parse_val third_party/json.h:123
+    #4 0x64a60fbf15bb in json_parse third_party/json.h:164
+    #5 0x64a60fbf414b in store_open tests/unit/k3_model.c:58
+    #6 0x64a60fbf414b in main tests/unit/k3_model.c:248
+    #7 0x7c6db282a1c9  (/lib/x86_64-linux-gnu/libc.so.6+0x2a1c9) (BuildId: 328820b908de8ea1ef79afa8995e302e819163d7)
+    #8 0x7c6db282a28a in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x2a28a) (BuildId: 328820b908de8ea1ef79afa8995e302e819163d7)
+    #9 0x64a60fbec8a4 in _start (/root/engine/bin/k3_model+0x3b8a4) (BuildId: b2d41ce562a5562093f3eb70e942bd5f51c8e13c)
+
+SUMMARY: AddressSanitizer: 406241 byte(s) leaked in 8643 allocation(s).

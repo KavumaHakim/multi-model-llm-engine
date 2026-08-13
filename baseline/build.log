@@ -1,0 +1,11 @@
+cc -O3 -std=gnu99 -Wall -Wextra -Wpointer-arith -Wshadow -Wvla -Wno-unused-parameter -mavx2 -mfma -fopenmp -pthread -ffp-contract=off -Iinclude -Iinclude/k3 -Ithird_party -Isrc/core -Isrc/io -Isrc/cache -Isrc/model -Isrc/tokenizer -c src/io/k3_st.c -o build/src/io/k3_st.o
+cc -O3 -std=gnu99 -Wall -Wextra -Wpointer-arith -Wshadow -Wvla -Wno-unused-parameter -mavx2 -mfma -fopenmp -pthread -ffp-contract=off -Iinclude -Iinclude/k3 -Ithird_party -Isrc/core -Isrc/io -Isrc/cache -Isrc/model -Isrc/tokenizer -c src/core/k3_ops.c -o build/src/core/k3_ops.o
+cc -O3 -std=gnu99 -Wall -Wextra -Wpointer-arith -Wshadow -Wvla -Wno-unused-parameter -mavx2 -mfma -fopenmp -pthread -ffp-contract=off -Iinclude -Iinclude/k3 -Ithird_party -Isrc/core -Isrc/io -Isrc/cache -Isrc/model -Isrc/tokenizer -c src/io/k3_load.c -o build/src/io/k3_load.o
+cc -O3 -std=gnu99 -Wall -Wextra -Wpointer-arith -Wshadow -Wvla -Wno-unused-parameter -mavx2 -mfma -fopenmp -pthread -ffp-contract=off -Iinclude -Iinclude/k3 -Ithird_party -Isrc/core -Isrc/io -Isrc/cache -Isrc/model -Isrc/tokenizer -c src/io/k3_trunk.c -o build/src/io/k3_trunk.o
+cc -O3 -std=gnu99 -Wall -Wextra -Wpointer-arith -Wshadow -Wvla -Wno-unused-parameter -mavx2 -mfma -fopenmp -pthread -ffp-contract=off -Iinclude -Iinclude/k3 -Ithird_party -Isrc/core -Isrc/io -Isrc/cache -Isrc/model -Isrc/tokenizer -c src/cache/k3_cache.c -o build/src/cache/k3_cache.o
+cc -O3 -std=gnu99 -Wall -Wextra -Wpointer-arith -Wshadow -Wvla -Wno-unused-parameter -mavx2 -mfma -fopenmp -pthread -ffp-contract=off -Iinclude -Iinclude/k3 -Ithird_party -Isrc/core -Isrc/io -Isrc/cache -Isrc/model -Isrc/tokenizer -c src/model/k3_bind.c -o build/src/model/k3_bind.o
+cc -O3 -std=gnu99 -Wall -Wextra -Wpointer-arith -Wshadow -Wvla -Wno-unused-parameter -mavx2 -mfma -fopenmp -pthread -ffp-contract=off -Iinclude -Iinclude/k3 -Ithird_party -Isrc/core -Isrc/io -Isrc/cache -Isrc/model -Isrc/tokenizer src/cli/k3_run.c build/src/core/k3_ops.o build/src/io/k3_st.o build/src/io/k3_load.o build/src/io/k3_trunk.o build/src/cache/k3_cache.o build/src/model/k3_bind.o -o bin/k3 -lm -fopenmp -pthread
+total 228
+drwxr-xr-x  2 root root   4096 Aug 13 18:16 .
+drwxrwxrwx 16 root root   4096 Aug 13 18:16 ..
+-rwxr-xr-x  1 root root 221856 Aug 13 18:16 k3

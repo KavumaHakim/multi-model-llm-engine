@@ -1,0 +1,3 @@
+GATE 1  teacher forcing : 32/32 positions match tf_pred
+GATE 2  greedy decode   : 20/20 generated tokens match full_ids
+GATE 3  incremental    : 20/20 generated tokens match full_ids  <- KV cache + carried KDA state
