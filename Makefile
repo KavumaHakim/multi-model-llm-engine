@@ -97,7 +97,7 @@ INCLUDES := -Iinclude -Iinclude/k3 -Ithird_party \
 # src/storage or src/formats includes a k3_* header except formats/safetensors.c, which
 # is a documented migration adapter over the existing reader (see its header comment).
 GENERIC_SRC := src/tensor/dtype.c src/tensor/tensor.c \
-               src/storage/file.c \
+               src/storage/file.c src/storage/cache.c \
                src/formats/safetensors.c
 GENERIC_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(GENERIC_SRC))
 
@@ -111,7 +111,8 @@ CLI_SRC    := src/cli/k3_run.c
 CLI_BIN    := $(BIN)/k3
 
 # Tests that need no checkpoint. These run in CI on every push.
-UNIT_TESTS := test_ops test_cache test_st test_cfg test_tok scale_test k3_model test_tensor
+UNIT_TESTS := test_ops test_cache test_st test_cfg test_tok scale_test k3_model \
+              test_tensor test_cache_generic
 # Tests that need real shards. Built and run by `make test-all` with SHARD_DIR set;
 # see the weights-test target below.
 WEIGHT_TESTS := test_expert test_real_layer
@@ -147,7 +148,12 @@ $(BIN)/test_ops: tests/unit/test_ops.c $(BUILD)/src/core/k3_ops.o | $(BIN)
 
 $(BIN)/test_cache: tests/unit/test_cache.c $(BUILD)/src/cache/k3_cache.o \
                    $(BUILD)/src/io/k3_load.o $(BUILD)/src/io/k3_st.o \
-                   $(BUILD)/src/core/k3_ops.o | $(BIN)
+                   $(BUILD)/src/core/k3_ops.o $(BUILD)/src/storage/cache.o | $(BIN)
+	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+
+# The generic cache links NOTHING from K3. A link error here means a model-specific
+# dependency crept into src/storage, which is the layering rule this target enforces.
+$(BIN)/test_cache_generic: tests/unit/test_cache_generic.c $(BUILD)/src/storage/cache.o | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
 $(BIN)/test_st: tests/unit/test_st.c $(BUILD)/src/io/k3_st.o | $(BIN)
@@ -198,6 +204,7 @@ test: $(TEST_BINS)
 	      echo "           repository. Run: make tok TOK_FILES=/path/to/k3model"; \
 	  fi
 	@echo "== generic layer ==";     ./$(BIN)/test_tensor $(FIXTURES)/st $(BUILD)
+	@echo "== generic cache ==";     ./$(BIN)/test_cache_generic
 	@echo "== real dimensions ==";   ./$(BIN)/scale_test
 	@echo "== full-model oracle =="; ./$(BIN)/k3_model $(FIXTURES)
 	@echo
