@@ -89,20 +89,29 @@ LDFLAGS  ?= -lm $(OMP_LDFLAGS) -pthread
 # Flat include search across the module dirs: sources use "k3.h", "k3_cache.h" etc
 # rather than path-qualified includes, which keeps them relocatable.
 INCLUDES := -Iinclude -Iinclude/k3 -Ithird_party \
-            -Isrc/core -Isrc/io -Isrc/cache -Isrc/model -Isrc/tokenizer
+            -Isrc/core -Isrc/io -Isrc/cache -Isrc/model -Isrc/tokenizer \
+            -Isrc/tensor -Isrc/storage -Isrc/formats
 
 # ----------------------------------------------------------------------------- files --
+# The generic runtime layer. Model-independent by construction: nothing under src/tensor,
+# src/storage or src/formats includes a k3_* header except formats/safetensors.c, which
+# is a documented migration adapter over the existing reader (see its header comment).
+GENERIC_SRC := src/tensor/dtype.c src/tensor/tensor.c \
+               src/storage/file.c \
+               src/formats/safetensors.c
+GENERIC_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(GENERIC_SRC))
+
 ENGINE_SRC := src/core/k3_ops.c \
               src/io/k3_st.c src/io/k3_load.c src/io/k3_trunk.c \
               src/cache/k3_cache.c \
               src/model/k3_bind.c
-ENGINE_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(ENGINE_SRC))
+ENGINE_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(ENGINE_SRC)) $(GENERIC_OBJ)
 
 CLI_SRC    := src/cli/k3_run.c
 CLI_BIN    := $(BIN)/k3
 
 # Tests that need no checkpoint. These run in CI on every push.
-UNIT_TESTS := test_ops test_cache test_st test_cfg test_tok scale_test k3_model
+UNIT_TESTS := test_ops test_cache test_st test_cfg test_tok scale_test k3_model test_tensor
 # Tests that need real shards. Built and run by `make test-all` with SHARD_DIR set;
 # see the weights-test target below.
 WEIGHT_TESTS := test_expert test_real_layer
@@ -160,6 +169,12 @@ $(BIN)/scale_test: tests/unit/scale_test.c $(BUILD)/src/core/k3_ops.o | $(BIN)
 $(BIN)/k3_model: tests/unit/k3_model.c $(BUILD)/src/core/k3_ops.o | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
+# The generic layer links the safetensors reader because its adapter wraps it. It does
+# NOT link k3_ops.o: nothing under src/tensor or src/storage may depend on a kernel, and
+# a link error here is the enforcement of that rule.
+$(BIN)/test_tensor: tests/unit/test_tensor.c $(GENERIC_OBJ) $(BUILD)/src/io/k3_st.o | $(BIN)
+	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+
 $(BIN)/bench_kernels: benchmarks/bench_kernels.c $(BUILD)/src/core/k3_ops.o | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
@@ -182,6 +197,7 @@ test: $(TEST_BINS)
 	      echo "           the vocabulary ships with the checkpoint, not with this"; \
 	      echo "           repository. Run: make tok TOK_FILES=/path/to/k3model"; \
 	  fi
+	@echo "== generic layer ==";     ./$(BIN)/test_tensor $(FIXTURES)/st $(BUILD)
 	@echo "== real dimensions ==";   ./$(BIN)/scale_test
 	@echo "== full-model oracle =="; ./$(BIN)/k3_model $(FIXTURES)
 	@echo
