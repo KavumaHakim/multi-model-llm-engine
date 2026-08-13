@@ -55,7 +55,7 @@ SAN="-fsanitize=address,undefined -fno-omit-frame-pointer"
 CF="-O1 -g -std=gnu99 -Wall -Wextra -Wpointer-arith -Wshadow -Wvla -Wno-unused-parameter $SAN -ffp-contract=off"
 make CFLAGS="$CF" LDFLAGS="-lm $SAN" ARCH= \
      bin/test_streamer bin/test_cache_generic bin/test_cache bin/test_tensor \
-     bin/test_ops bin/k3_model -j"$(nproc)" >/dev/null 2>&1
+     bin/test_planner bin/test_ops bin/k3_model -j"$(nproc)" >/dev/null 2>&1
 # LEAK POLICY IS PER TEST, and the split is meaningful rather than convenient.
 #
 #   leaks=1  the tests written for the generic layer. These own every allocation they
@@ -68,6 +68,7 @@ for t in "test_streamer|build|1" \
          "test_cache_generic||1" \
          "test_cache|tests/fixtures/cache|1" \
          "test_tensor|tests/fixtures/st build|1" \
+         "test_planner||1" \
          "test_ops|tests/fixtures/ops|0" \
          "k3_model|tests/fixtures|0"; do
     n=${t%%|*}; rest=${t#*|}; a=${rest%|*}; leaks=${rest##*|}

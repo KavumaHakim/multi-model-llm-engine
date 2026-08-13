@@ -90,7 +90,7 @@ LDFLAGS  ?= -lm $(OMP_LDFLAGS) -pthread
 # rather than path-qualified includes, which keeps them relocatable.
 INCLUDES := -Iinclude -Iinclude/k3 -Ithird_party \
             -Isrc/core -Isrc/io -Isrc/cache -Isrc/model -Isrc/tokenizer \
-            -Isrc/tensor -Isrc/storage -Isrc/formats
+            -Isrc/tensor -Isrc/storage -Isrc/formats -Isrc/runtime
 
 # ----------------------------------------------------------------------------- files --
 # The generic runtime layer. Model-independent by construction: nothing under src/tensor,
@@ -98,7 +98,8 @@ INCLUDES := -Iinclude -Iinclude/k3 -Ithird_party \
 # is a documented migration adapter over the existing reader (see its header comment).
 GENERIC_SRC := src/tensor/dtype.c src/tensor/tensor.c \
                src/storage/file.c src/storage/cache.c src/storage/streamer.c \
-               src/formats/safetensors.c
+               src/formats/safetensors.c \
+               src/runtime/hwinfo.c src/runtime/memory.c src/runtime/planner.c
 GENERIC_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(GENERIC_SRC))
 
 ENGINE_SRC := src/core/k3_ops.c \
@@ -112,7 +113,7 @@ CLI_BIN    := $(BIN)/k3
 
 # Tests that need no checkpoint. These run in CI on every push.
 UNIT_TESTS := test_ops test_cache test_st test_cfg test_tok scale_test k3_model \
-              test_tensor test_cache_generic test_streamer
+              test_tensor test_cache_generic test_streamer test_planner
 # Tests that need real shards. Built and run by `make test-all` with SHARD_DIR set;
 # see the weights-test target below.
 WEIGHT_TESTS := test_expert test_real_layer
@@ -158,6 +159,13 @@ $(BIN)/test_cache_generic: tests/unit/test_cache_generic.c $(BUILD)/src/storage/
 
 $(BIN)/test_streamer: tests/unit/test_streamer.c $(BUILD)/src/storage/streamer.o \
                       $(BUILD)/src/storage/file.o | $(BIN)
+	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+
+# The planner links only runtime/. It must not need storage, formats or any model: it is
+# arithmetic over facts already gathered, which is what lets `inspect` run it on a
+# machine that could not host the model.
+$(BIN)/test_planner: tests/unit/test_planner.c $(BUILD)/src/runtime/hwinfo.o \
+                     $(BUILD)/src/runtime/memory.o $(BUILD)/src/runtime/planner.o | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
 $(BIN)/test_st: tests/unit/test_st.c $(BUILD)/src/io/k3_st.o | $(BIN)
@@ -210,6 +218,7 @@ test: $(TEST_BINS)
 	@echo "== generic layer ==";     ./$(BIN)/test_tensor $(FIXTURES)/st $(BUILD)
 	@echo "== generic cache ==";     ./$(BIN)/test_cache_generic
 	@echo "== block streamer ==";    ./$(BIN)/test_streamer $(BUILD)
+	@echo "== planner ==";           ./$(BIN)/test_planner
 	@echo "== real dimensions ==";   ./$(BIN)/scale_test
 	@echo "== full-model oracle =="; ./$(BIN)/k3_model $(FIXTURES)
 	@echo
