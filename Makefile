@@ -102,7 +102,9 @@ GENERIC_SRC := src/tensor/dtype.c src/tensor/tensor.c \
                src/formats/safetensors.c \
                src/runtime/hwinfo.c src/runtime/memory.c src/runtime/planner.c \
                src/kernels/kernel.c src/kernels/kernel_avx2.c \
-               src/quant/quant.c src/quant/mxfp4.c src/quant/q8_0.c
+               src/quant/quant.c src/quant/mxfp4.c src/quant/q8_0.c \
+               src/quant/q4_k.c src/quant/q6_k.c \
+               src/formats/gguf.c
 GENERIC_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(GENERIC_SRC))
 
 # Model backends. NOT part of GENERIC_OBJ, and the distinction is the architecture
@@ -124,9 +126,11 @@ ENGINE_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(ENGINE_SRC)) $(GENERIC_OBJ) $(MODEL_
 # registry, mxfp4.c for the kernels themselves, dtype.c because the registry names
 # dtypes, and kernel_avx2.o because mxfp4.c asks the CPU at runtime whether it has AVX2.
 # Named once rather than repeated across the seven targets that link k3_ops.o.
-K3_OPS_OBJ := $(BUILD)/src/core/k3_ops.o \
-              $(BUILD)/src/quant/quant.o $(BUILD)/src/quant/mxfp4.o \
-              $(BUILD)/src/quant/q8_0.o \
+QUANT_OBJ := $(BUILD)/src/quant/quant.o $(BUILD)/src/quant/mxfp4.o \
+             $(BUILD)/src/quant/q8_0.o $(BUILD)/src/quant/q4_k.o \
+             $(BUILD)/src/quant/q6_k.o
+
+K3_OPS_OBJ := $(BUILD)/src/core/k3_ops.o $(QUANT_OBJ) \
               $(BUILD)/src/tensor/dtype.o $(BUILD)/src/kernels/kernel_avx2.o
 
 CLI_SRC    := src/cli/k3_run.c
@@ -135,7 +139,7 @@ CLI_BIN    := $(BIN)/k3
 # Tests that need no checkpoint. These run in CI on every push.
 UNIT_TESTS := test_ops test_cache test_st test_cfg test_tok scale_test k3_model \
               test_tensor test_cache_generic test_streamer test_planner test_kernels \
-              test_quant test_model
+              test_quant test_model test_gguf
 # Tests that need real shards. Built and run by `make test-all` with SHARD_DIR set;
 # see the weights-test target below.
 WEIGHT_TESTS := test_expert test_real_layer
@@ -206,8 +210,13 @@ $(BIN)/test_model: tests/unit/test_model.c $(BUILD)/src/models/registry.o \
                    $(K3_OPS_OBJ) | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
-$(BIN)/test_quant: tests/unit/test_quant.c $(BUILD)/src/quant/quant.o \
-                   $(BUILD)/src/quant/mxfp4.o $(BUILD)/src/quant/q8_0.o \
+$(BIN)/test_gguf: tests/unit/test_gguf.c $(BUILD)/src/formats/gguf.o \
+                  $(BUILD)/src/storage/file.o $(BUILD)/src/tensor/dtype.o \
+                  $(BUILD)/src/tensor/tensor.o $(QUANT_OBJ) \
+                  $(BUILD)/src/kernels/kernel_avx2.o | $(BIN)
+	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+
+$(BIN)/test_quant: tests/unit/test_quant.c $(QUANT_OBJ) \
                    $(BUILD)/src/tensor/dtype.o $(BUILD)/src/kernels/kernel_avx2.o | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
@@ -227,7 +236,12 @@ $(BIN)/test_st: tests/unit/test_st.c $(BUILD)/src/io/k3_st.o | $(BIN)
 $(BIN)/test_tok: tests/unit/test_tok.c | $(BIN)
 	$(CC) -O2 -std=c99 $(WARN) -Wno-unused-function $(INCLUDES) $< -o $@
 
-$(BIN)/test_cfg: tests/unit/test_cfg.c src/core/k3_ops.c src/quant/quant.c src/quant/mxfp4.c src/quant/q8_0.c src/tensor/dtype.c src/kernels/kernel_avx2.c | $(BIN)
+# Compiles from source rather than linking objects, so the quant sources are listed
+# individually. The registry in quant.c references every built-in format by symbol, so
+# adding a format means adding it here too or the link fails.
+$(BIN)/test_cfg: tests/unit/test_cfg.c src/core/k3_ops.c src/quant/quant.c \
+                 src/quant/mxfp4.c src/quant/q8_0.c src/quant/q4_k.c src/quant/q6_k.c \
+                 src/tensor/dtype.c src/kernels/kernel_avx2.c | $(BIN)
 	$(CC) -O2 -std=c99 $(WARN) -Wno-unused-function $(INCLUDES) $^ -o $@ -lm
 
 # Allocates at REAL model widths (a ~1.8 GB KDA layer), so it needs the optimised build
@@ -273,6 +287,7 @@ test: $(TEST_BINS)
 	@echo "== cpu kernels ==";       ./$(BIN)/test_kernels
 	@echo "== quantization ==";      ./$(BIN)/test_quant
 	@echo "== model backends ==";    ./$(BIN)/test_model
+	@echo "== gguf + k-quants ==";   ./$(BIN)/test_gguf tests/fixtures/gguf/golden.bin $(BUILD)
 	@echo "== cpu kernels (no -mavx2, runtime dispatch only) =="; \
 	  $(MAKE) --no-print-directory $(BIN)/test_kernels_portable && ./$(BIN)/test_kernels_portable | tail -3
 	@echo "== real dimensions ==";   ./$(BIN)/scale_test

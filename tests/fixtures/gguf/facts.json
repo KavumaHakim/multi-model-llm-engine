@@ -1,0 +1,97 @@
+{
+ "alignment": 32,
+ "arch": "qwen3",
+ "block_count": 36,
+ "by_type": {
+  "f32": {
+   "bytes": 1232896,
+   "count": 145
+  },
+  "q4_k": {
+   "bytes": 3704979456,
+   "count": 217
+  },
+  "q6_k": {
+   "bytes": 1315614720,
+   "count": 37
+  }
+ },
+ "context_length": 40960,
+ "data_start": 5956416,
+ "embedding_length": 4096,
+ "file_size": 5027783488,
+ "head_count": 32,
+ "head_count_kv": 8,
+ "header_end": 5956403,
+ "n_kv": 28,
+ "n_tensors": 399,
+ "probe": {
+  "blk.0.attn_q.weight": {
+   "file_off": 878351680,
+   "nbytes": 9437184,
+   "shape": [
+    4096,
+    4096
+   ],
+   "type": "q4_k"
+  },
+  "blk.0.attn_v.weight": {
+   "file_off": 887789376,
+   "nbytes": 3440640,
+   "shape": [
+    4096,
+    1024
+   ],
+   "type": "q6_k"
+  },
+  "blk.0.ffn_down.weight": {
+   "file_off": 891230016,
+   "nbytes": 41287680,
+   "shape": [
+    12288,
+    4096
+   ],
+   "type": "q6_k"
+  },
+  "blk.35.ffn_up.weight": {
+   "file_off": 4999471936,
+   "nbytes": 28311552,
+   "shape": [
+    4096,
+    12288
+   ],
+   "type": "q4_k"
+  },
+  "output.weight": {
+   "file_off": 5956416,
+   "nbytes": 510504960,
+   "shape": [
+    4096,
+    151936
+   ],
+   "type": "q6_k"
+  },
+  "output_norm.weight": {
+   "file_off": 516461376,
+   "nbytes": 16384,
+   "shape": [
+    4096
+   ],
+   "type": "f32"
+  },
+  "token_embd.weight": {
+   "file_off": 516477760,
+   "nbytes": 350060544,
+   "shape": [
+    4096,
+    151936
+   ],
+   "type": "q4_k"
+  }
+ },
+ "rms_eps": 9.999999974752427e-07,
+ "rope_freq_base": 1000000.0,
+ "sequential": true,
+ "tensor_bytes_total": 5021827072,
+ "version": 3
+}

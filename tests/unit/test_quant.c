@@ -91,8 +91,11 @@ static void test_registry(void)
     /* A dtype with no implementation must return NULL, not a default. There is no
      * sensible way to "decode these bytes somehow". */
     ok(eng_quant_ops(ENG_DT_F32)     == NULL, "unquantized dtype has no ops", NULL);
-    ok(eng_quant_ops(ENG_DT_Q4_K)    == NULL, "unimplemented quant has no ops",
-       "q4_k arrives with the GGUF loader");
+    /* Q5_K is a real GGUF format this engine has not implemented. It stands in for
+     * "recognised but unsupported", a case that must return NULL rather than a default.
+     * This assertion used to name Q4_K, which stopped being unimplemented at M8 -- a
+     * test that silently changes meaning is worse than one that fails. */
+    ok(eng_quant_ops(ENG_DT_Q5_K)    == NULL, "unimplemented quant has no ops", "q5_k");
     ok(eng_quant_ops(ENG_DT_INVALID) == NULL, "invalid dtype has no ops", NULL);
 
     /* Registering over an existing format must be refused rather than silently
@@ -220,6 +223,31 @@ static int build_row(EngDType dt, int n, unsigned char **w, unsigned char **s)
         for (int64_t i = 0; i < rb; i++) (*w)[i] = brand();
         /* Exponents near the middle of the range, and never 255 (NaN by spec). */
         for (int64_t i = 0; i < sb; i++) (*s)[i] = (unsigned char)(120 + (brand() % 12));
+    } else if (dt == ENG_DT_Q4_K) {
+        /* 144-byte superblocks: d(f16) dmin(f16) scales[12] qs[128]. The two f16 scales
+         * are written deliberately -- random bytes there would land on NaN or Inf
+         * roughly one time in 250 and make the comparison meaningless -- while the
+         * 6-bit scale/min field and the quants are free to be anything. */
+        const int64_t nblk = rb / 144;
+        for (int64_t b = 0; b < nblk; b++) {
+            unsigned char *blk = *w + b * 144;
+            const uint16_t hd = f32_to_f16(0.005f + 0.001f * (float)(b % 5));
+            const uint16_t hm = f32_to_f16(0.002f + 0.0005f * (float)(b % 3));
+            memcpy(blk + 0, &hd, 2);
+            memcpy(blk + 2, &hm, 2);
+            for (int j = 4; j < 144; j++) blk[j] = brand();
+        }
+    } else if (dt == ENG_DT_Q6_K) {
+        /* 210-byte superblocks: ql[128] qh[64] scales[16](int8) d(f16). The int8 scales
+         * may be any value including negative, which is the point -- reading them as
+         * unsigned flips the sign of about half the weights. */
+        const int64_t nblk = rb / 210;
+        for (int64_t b = 0; b < nblk; b++) {
+            unsigned char *blk = *w + b * 210;
+            for (int j = 0; j < 208; j++) blk[j] = brand();
+            const uint16_t hd = f32_to_f16(0.004f + 0.001f * (float)(b % 4));
+            memcpy(blk + 208, &hd, 2);
+        }
     } else if (dt == ENG_DT_Q8_0) {
         /* 34-byte blocks: f16 scale then 32 int8. Write a sane scale per block. */
         const int64_t nblk = rb / 34;
@@ -366,8 +394,12 @@ static void test_matmul(void)
     ok(eng_matmul_quant(y, x, W, NULL, in, rows, ENG_DT_MXFP4) == -1,
        "refuses NULL scales for an external-scale format", NULL);
 
-    ok(eng_matmul_quant(y, x, W, S, in, rows, ENG_DT_Q4_K) == -1,
-       "refuses a dtype with no implementation", "q4_k");
+    /* Q5_K, not Q4_K: this check used to name Q4_K and, once Q4_K was implemented, it
+     * kept passing for an unrelated reason -- 128 elements is not a whole 256-element
+     * superblock, so row_bytes refused it before the missing-implementation path was
+     * ever reached. It asserted nothing. */
+    ok(eng_matmul_quant(y, x, W, S, in, rows, ENG_DT_Q5_K) == -1,
+       "refuses a dtype with no implementation", "q5_k");
 
     free(W); free(S); free(x); free(y);
 }

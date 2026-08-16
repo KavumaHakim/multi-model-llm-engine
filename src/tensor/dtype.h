@@ -108,6 +108,39 @@ typedef struct {
     uint32_t    row_extra;    /* extra bytes at the head of each row (ROW_SCALE only) */
 } EngDTypeInfo;
 
+/* IEEE half to float. Handles subnormals, infinities and NaN.
+ *
+ * NOT the same operation as bf16 widening, and conflating them is a real hazard: bf16
+ * IS the top half of an f32, so widening it is a 16-bit shift with no rounding and no
+ * rebias. f16 has a 5-bit exponent biased by 15 against f32's 8-bit biased by 127, so it
+ * needs an exponent rebias, subnormal renormalisation, and special cases at both ends.
+ * Every GGUF k-quant stores its block scales as f16, so getting this wrong scales every
+ * weight in the model by a wrong power of two. */
+static inline float eng_f16_to_f32(uint16_t h)
+{
+    const uint32_t sign = (uint32_t)(h & 0x8000u) << 16;
+    const uint32_t exp  = (h >> 10) & 0x1Fu;
+    const uint32_t man  = h & 0x3FFu;
+    union { uint32_t u; float f; } v;
+
+    if (exp == 0) {
+        if (man == 0) { v.u = sign; return v.f; }        /* signed zero */
+        /* Subnormal: renormalise by shifting the mantissa up until its implicit bit
+         * appears, decrementing the exponent to match. */
+        uint32_t m = man, e = 0;
+        while (!(m & 0x400u)) { m <<= 1; e++; }
+        m &= 0x3FFu;
+        v.u = sign | ((127 - 15 - e + 1) << 23) | (m << 13);
+        return v.f;
+    }
+    if (exp == 0x1F) {                                    /* inf or NaN */
+        v.u = sign | 0x7F800000u | (man << 13);
+        return v.f;
+    }
+    v.u = sign | ((exp + (127 - 15)) << 23) | (man << 13);
+    return v.f;
+}
+
 /* NULL for an unknown or invalid id. Never returns a placeholder: a caller that gets
  * NULL must fail rather than proceed with a guessed size. */
 const EngDTypeInfo *eng_dtype_info(EngDType dt);

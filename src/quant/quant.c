@@ -9,6 +9,8 @@
  * not a case in a switch, so adding one touches this list and nothing else. */
 extern const EngQuantOps eng_quant_mxfp4;
 extern const EngQuantOps eng_quant_q8_0;
+extern const EngQuantOps eng_quant_q4_k;
+extern const EngQuantOps eng_quant_q6_k;
 
 static const EngQuantOps *REG[ENG_DT_MAX];
 static int reg_ready = 0;
@@ -20,6 +22,8 @@ static void reg_init(void)
     reg_ready = 1;      /* set FIRST: eng_quant_register calls back into lookup */
     eng_quant_register(&eng_quant_mxfp4);
     eng_quant_register(&eng_quant_q8_0);
+    eng_quant_register(&eng_quant_q4_k);
+    eng_quant_register(&eng_quant_q6_k);
 }
 
 int eng_quant_register(const EngQuantOps *ops)
