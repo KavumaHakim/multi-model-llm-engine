@@ -172,4 +172,37 @@ static jval *json_get(jval *o, const char *key) {
     return NULL;
 }
 
+/* Release a parsed tree.
+ *
+ * OPT IN, and the reason is a real constraint rather than caution. Nodes, keys and
+ * strings are each individually allocated (the `arena` field is vestigial: j_dup
+ * ignores it and mallocs per string), so nothing is reclaimed by freeing the arena
+ * pointer json_parse hands back. Callers that keep the tree alive for the process --
+ * k3_trunk.c stores every K3TrunkTensor.name as a pointer INTO keys[], and k3_cfg does
+ * the same for its string fields -- must NOT call this, because every one of those
+ * pointers would dangle.
+ *
+ * Callers that only READ values out of the tree and then discard it should call this.
+ * Without it, a function that parses on every invocation -- a backend probe, which runs
+ * once per registered backend per path -- leaks its whole tree each time, which a
+ * long-lived `serve` process would accumulate.
+ *
+ * Recursion is bounded by J_MAX_DEPTH, the same ceiling the parser enforces.
+ *
+ * `static inline` rather than plain `static`: this is the one entry point in this
+ * header that most translation units never call, and a plain static would trip
+ * -Wunused-function in every one of them. Recursion and inline coexist fine -- the
+ * compiler simply declines to expand it. */
+static inline void json_free(jval *v) {
+    if (!v) return;
+    for (int i = 0; i < v->len; i++) {
+        if (v->keys && v->keys[i]) free(v->keys[i]);
+        if (v->kids) json_free(v->kids[i]);
+    }
+    free(v->kids);
+    free(v->keys);
+    if (v->t == J_STR) free(v->str);
+    free(v);
+}
+
 #endif

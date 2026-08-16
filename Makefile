@@ -91,7 +91,7 @@ LDFLAGS  ?= -lm $(OMP_LDFLAGS) -pthread
 INCLUDES := -Iinclude -Iinclude/k3 -Ithird_party \
             -Isrc/core -Isrc/io -Isrc/cache -Isrc/model -Isrc/tokenizer \
             -Isrc/tensor -Isrc/storage -Isrc/formats -Isrc/runtime -Isrc/kernels \
-            -Isrc/quant
+            -Isrc/quant -Isrc/models -Isrc/models/kimi
 
 # ----------------------------------------------------------------------------- files --
 # The generic runtime layer. Model-independent by construction: nothing under src/tensor,
@@ -105,11 +105,19 @@ GENERIC_SRC := src/tensor/dtype.c src/tensor/tensor.c \
                src/quant/quant.c src/quant/mxfp4.c src/quant/q8_0.c
 GENERIC_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(GENERIC_SRC))
 
+# Model backends. NOT part of GENERIC_OBJ, and the distinction is the architecture
+# rather than bookkeeping: everything in GENERIC_SRC is model-independent and must link
+# without any backend present, which is what stops the runtime growing an `if (arch ==
+# ...)`. Folding these in there made every generic test drag in kimi.o and, through it,
+# k3_ops -- a link error that was really a layering violation.
+MODEL_SRC := src/models/registry.c src/models/kimi/kimi.c
+MODEL_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(MODEL_SRC))
+
 ENGINE_SRC := src/core/k3_ops.c \
               src/io/k3_st.c src/io/k3_load.c src/io/k3_trunk.c \
               src/cache/k3_cache.c \
               src/model/k3_bind.c
-ENGINE_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(ENGINE_SRC)) $(GENERIC_OBJ)
+ENGINE_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(ENGINE_SRC)) $(GENERIC_OBJ) $(MODEL_OBJ)
 
 # What k3_ops.o now needs to link. Since M6 the MXFP4 kernels live in src/quant, so
 # every test binary that links k3_ops.o needs the quant layer behind it: quant.c for the
@@ -127,7 +135,7 @@ CLI_BIN    := $(BIN)/k3
 # Tests that need no checkpoint. These run in CI on every push.
 UNIT_TESTS := test_ops test_cache test_st test_cfg test_tok scale_test k3_model \
               test_tensor test_cache_generic test_streamer test_planner test_kernels \
-              test_quant
+              test_quant test_model
 # Tests that need real shards. Built and run by `make test-all` with SHARD_DIR set;
 # see the weights-test target below.
 WEIGHT_TESTS := test_expert test_real_layer
@@ -184,6 +192,18 @@ $(BIN)/test_planner: tests/unit/test_planner.c $(BUILD)/src/runtime/hwinfo.o \
 
 $(BIN)/test_kernels: tests/unit/test_kernels.c $(BUILD)/src/kernels/kernel.o \
                      $(BUILD)/src/kernels/kernel_avx2.o | $(BIN)
+	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+
+# K3_OPS_OBJ already carries kernel_avx2.o, so it is not listed again here: naming an
+# object twice on one link line is a duplicate-symbol error, not a no-op. The kimi
+# backend needs k3_ops for k3_layer_scratch/k3_moe_scratch, which is deliberate --
+# inspect reports the same scratch figures the run path actually allocates rather than
+# an independent estimate of them.
+$(BIN)/test_model: tests/unit/test_model.c $(BUILD)/src/models/registry.o \
+                   $(BUILD)/src/models/kimi/kimi.o $(BUILD)/src/io/k3_st.o \
+                   $(BUILD)/src/runtime/hwinfo.o $(BUILD)/src/runtime/memory.o \
+                   $(BUILD)/src/runtime/planner.o $(BUILD)/src/kernels/kernel.o \
+                   $(K3_OPS_OBJ) | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
 $(BIN)/test_quant: tests/unit/test_quant.c $(BUILD)/src/quant/quant.o \
@@ -252,6 +272,7 @@ test: $(TEST_BINS)
 	@echo "== planner ==";           ./$(BIN)/test_planner
 	@echo "== cpu kernels ==";       ./$(BIN)/test_kernels
 	@echo "== quantization ==";      ./$(BIN)/test_quant
+	@echo "== model backends ==";    ./$(BIN)/test_model
 	@echo "== cpu kernels (no -mavx2, runtime dispatch only) =="; \
 	  $(MAKE) --no-print-directory $(BIN)/test_kernels_portable && ./$(BIN)/test_kernels_portable | tail -3
 	@echo "== real dimensions ==";   ./$(BIN)/scale_test

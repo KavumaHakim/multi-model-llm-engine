@@ -55,8 +55,8 @@ SAN="-fsanitize=address,undefined -fno-omit-frame-pointer"
 CF="-O1 -g -std=gnu99 -Wall -Wextra -Wpointer-arith -Wshadow -Wvla -Wno-unused-parameter $SAN -ffp-contract=off"
 make CFLAGS="$CF" LDFLAGS="-lm $SAN" ARCH= \
      bin/test_streamer bin/test_cache_generic bin/test_cache bin/test_tensor \
-     bin/test_planner bin/test_kernels bin/test_quant bin/test_ops bin/k3_model \
-     -j"$(nproc)" >/dev/null 2>&1
+     bin/test_planner bin/test_kernels bin/test_quant bin/test_model \
+     bin/test_ops bin/k3_model -j"$(nproc)" >/dev/null 2>&1
 # LEAK POLICY IS PER TEST, and the split is meaningful rather than convenient.
 #
 #   leaks=1  the tests written for the generic layer. These own every allocation they
@@ -72,17 +72,23 @@ for t in "test_streamer|build|1" \
          "test_planner||1" \
          "test_kernels||1" \
          "test_quant||1" \
+         "test_model||1" \
          "test_ops|tests/fixtures/ops|0" \
          "k3_model|tests/fixtures|0"; do
     n=${t%%|*}; rest=${t#*|}; a=${rest%|*}; leaks=${rest##*|}
     [ -x "bin/$n" ] || { echo "  BUILD FAILED: $n"; rc=1; continue; }
     # shellcheck disable=SC2086
     ASAN_OPTIONS="detect_leaks=$leaks" ./bin/$n $a >/dev/null 2>"/tmp/san_$n.err"; ex=$?
+    # LeakSanitizer is matched explicitly. It reports as "ERROR: LeakSanitizer", which an
+    # AddressSanitizer-only pattern misses -- an earlier version of this script printed
+    # "no sanitizer finding" over a real leak and left the exit code to catch it.
+    #
     # grep's status, not head's: a pipeline ending in head returns 0 either way, which
-    # made an earlier version of this script report findings that did not exist.
-    if grep -qE 'ERROR: AddressSanitizer|runtime error' "/tmp/san_$n.err"; then
+    # made an even earlier version report findings that did not exist.
+    if grep -qE 'ERROR: AddressSanitizer|ERROR: LeakSanitizer|runtime error' "/tmp/san_$n.err"; then
         echo "  FINDINGS in $n:"
-        grep -E 'ERROR: AddressSanitizer|runtime error' "/tmp/san_$n.err" | head -5
+        grep -E 'ERROR: AddressSanitizer|ERROR: LeakSanitizer|runtime error' \
+             "/tmp/san_$n.err" | head -5
         rc=1
     elif [ "$ex" != "0" ]; then
         echo "  FAIL $n exited $ex with no sanitizer finding (test failure)"
