@@ -90,7 +90,8 @@ LDFLAGS  ?= -lm $(OMP_LDFLAGS) -pthread
 # rather than path-qualified includes, which keeps them relocatable.
 INCLUDES := -Iinclude -Iinclude/k3 -Ithird_party \
             -Isrc/core -Isrc/io -Isrc/cache -Isrc/model -Isrc/tokenizer \
-            -Isrc/tensor -Isrc/storage -Isrc/formats -Isrc/runtime -Isrc/kernels
+            -Isrc/tensor -Isrc/storage -Isrc/formats -Isrc/runtime -Isrc/kernels \
+            -Isrc/quant
 
 # ----------------------------------------------------------------------------- files --
 # The generic runtime layer. Model-independent by construction: nothing under src/tensor,
@@ -100,7 +101,8 @@ GENERIC_SRC := src/tensor/dtype.c src/tensor/tensor.c \
                src/storage/file.c src/storage/cache.c src/storage/streamer.c \
                src/formats/safetensors.c \
                src/runtime/hwinfo.c src/runtime/memory.c src/runtime/planner.c \
-               src/kernels/kernel.c src/kernels/kernel_avx2.c
+               src/kernels/kernel.c src/kernels/kernel_avx2.c \
+               src/quant/quant.c src/quant/mxfp4.c src/quant/q8_0.c
 GENERIC_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(GENERIC_SRC))
 
 ENGINE_SRC := src/core/k3_ops.c \
@@ -109,12 +111,23 @@ ENGINE_SRC := src/core/k3_ops.c \
               src/model/k3_bind.c
 ENGINE_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(ENGINE_SRC)) $(GENERIC_OBJ)
 
+# What k3_ops.o now needs to link. Since M6 the MXFP4 kernels live in src/quant, so
+# every test binary that links k3_ops.o needs the quant layer behind it: quant.c for the
+# registry, mxfp4.c for the kernels themselves, dtype.c because the registry names
+# dtypes, and kernel_avx2.o because mxfp4.c asks the CPU at runtime whether it has AVX2.
+# Named once rather than repeated across the seven targets that link k3_ops.o.
+K3_OPS_OBJ := $(BUILD)/src/core/k3_ops.o \
+              $(BUILD)/src/quant/quant.o $(BUILD)/src/quant/mxfp4.o \
+              $(BUILD)/src/quant/q8_0.o \
+              $(BUILD)/src/tensor/dtype.o $(BUILD)/src/kernels/kernel_avx2.o
+
 CLI_SRC    := src/cli/k3_run.c
 CLI_BIN    := $(BIN)/k3
 
 # Tests that need no checkpoint. These run in CI on every push.
 UNIT_TESTS := test_ops test_cache test_st test_cfg test_tok scale_test k3_model \
-              test_tensor test_cache_generic test_streamer test_planner test_kernels
+              test_tensor test_cache_generic test_streamer test_planner test_kernels \
+              test_quant
 # Tests that need real shards. Built and run by `make test-all` with SHARD_DIR set;
 # see the weights-test target below.
 WEIGHT_TESTS := test_expert test_real_layer
@@ -145,12 +158,12 @@ $(BIN):
 	@mkdir -p $(BIN)
 
 # Each test links only what it needs, so a failure points at one subsystem.
-$(BIN)/test_ops: tests/unit/test_ops.c $(BUILD)/src/core/k3_ops.o | $(BIN)
+$(BIN)/test_ops: tests/unit/test_ops.c $(K3_OPS_OBJ) | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
 $(BIN)/test_cache: tests/unit/test_cache.c $(BUILD)/src/cache/k3_cache.o \
                    $(BUILD)/src/io/k3_load.o $(BUILD)/src/io/k3_st.o \
-                   $(BUILD)/src/core/k3_ops.o $(BUILD)/src/storage/cache.o | $(BIN)
+                   $(K3_OPS_OBJ) $(BUILD)/src/storage/cache.o | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
 # The generic cache links NOTHING from K3. A link error here means a model-specific
@@ -173,6 +186,11 @@ $(BIN)/test_kernels: tests/unit/test_kernels.c $(BUILD)/src/kernels/kernel.o \
                      $(BUILD)/src/kernels/kernel_avx2.o | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
+$(BIN)/test_quant: tests/unit/test_quant.c $(BUILD)/src/quant/quant.o \
+                   $(BUILD)/src/quant/mxfp4.o $(BUILD)/src/quant/q8_0.o \
+                   $(BUILD)/src/tensor/dtype.o $(BUILD)/src/kernels/kernel_avx2.o | $(BIN)
+	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+
 # The bit-identity gate is only meaningful if the AVX2 code is present WITHOUT -mavx2 on
 # the command line -- that is the whole point of the per-function target attributes, and
 # it is what lets one binary serve CPUs that differ. Building this target portably and
@@ -189,15 +207,15 @@ $(BIN)/test_st: tests/unit/test_st.c $(BUILD)/src/io/k3_st.o | $(BIN)
 $(BIN)/test_tok: tests/unit/test_tok.c | $(BIN)
 	$(CC) -O2 -std=c99 $(WARN) -Wno-unused-function $(INCLUDES) $< -o $@
 
-$(BIN)/test_cfg: tests/unit/test_cfg.c src/core/k3_ops.c | $(BIN)
+$(BIN)/test_cfg: tests/unit/test_cfg.c src/core/k3_ops.c src/quant/quant.c src/quant/mxfp4.c src/quant/q8_0.c src/tensor/dtype.c src/kernels/kernel_avx2.c | $(BIN)
 	$(CC) -O2 -std=c99 $(WARN) -Wno-unused-function $(INCLUDES) $^ -o $@ -lm
 
 # Allocates at REAL model widths (a ~1.8 GB KDA layer), so it needs the optimised build
 # rather than the portable C99 one the tokenizer and config tests use.
-$(BIN)/scale_test: tests/unit/scale_test.c $(BUILD)/src/core/k3_ops.o | $(BIN)
+$(BIN)/scale_test: tests/unit/scale_test.c $(K3_OPS_OBJ) | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
-$(BIN)/k3_model: tests/unit/k3_model.c $(BUILD)/src/core/k3_ops.o | $(BIN)
+$(BIN)/k3_model: tests/unit/k3_model.c $(K3_OPS_OBJ) | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
 # The generic layer links the safetensors reader because its adapter wraps it. It does
@@ -206,7 +224,7 @@ $(BIN)/k3_model: tests/unit/k3_model.c $(BUILD)/src/core/k3_ops.o | $(BIN)
 $(BIN)/test_tensor: tests/unit/test_tensor.c $(GENERIC_OBJ) $(BUILD)/src/io/k3_st.o | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
-$(BIN)/bench_kernels: benchmarks/bench_kernels.c $(BUILD)/src/core/k3_ops.o | $(BIN)
+$(BIN)/bench_kernels: benchmarks/bench_kernels.c $(K3_OPS_OBJ) | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
 ## test: everything that needs no model weights
@@ -233,6 +251,7 @@ test: $(TEST_BINS)
 	@echo "== block streamer ==";    ./$(BIN)/test_streamer $(BUILD)
 	@echo "== planner ==";           ./$(BIN)/test_planner
 	@echo "== cpu kernels ==";       ./$(BIN)/test_kernels
+	@echo "== quantization ==";      ./$(BIN)/test_quant
 	@echo "== cpu kernels (no -mavx2, runtime dispatch only) =="; \
 	  $(MAKE) --no-print-directory $(BIN)/test_kernels_portable && ./$(BIN)/test_kernels_portable | tail -3
 	@echo "== real dimensions ==";   ./$(BIN)/scale_test
@@ -253,7 +272,7 @@ weights-test: $(WEIGHT_BINS)
 	./$(BIN)/test_real_layer $(SHARD_DIR) 1 4 8
 
 $(BIN)/test_expert: tests/unit/test_expert.c $(BUILD)/src/io/k3_load.o \
-                    $(BUILD)/src/io/k3_st.o $(BUILD)/src/core/k3_ops.o | $(BIN)
+                    $(BUILD)/src/io/k3_st.o $(K3_OPS_OBJ) | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
 $(BIN)/test_real_layer: tests/unit/test_real_layer.c $(ENGINE_OBJ) | $(BIN)

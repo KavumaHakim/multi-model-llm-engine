@@ -1023,11 +1023,16 @@ void k3_decoder_layer(float *h, float *block_residual, int *n_blocks,
 }
 
 /* ---------------------------------------------------------------- MXFP4 ---- */
-/* OCP MX E2M1: index by the 4-bit code; bit 3 is the sign. */
-static const float K3_E2M1[16] = {
-    0.0f,  0.5f,  1.0f,  1.5f,  2.0f,  3.0f,  4.0f,  6.0f,
-   -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f
-};
+/* The MXFP4 kernels moved to src/quant/mxfp4.c at M6. MXFP4 is an OCP standard rather
+ * than anything of K3's -- gpt-oss ships in it too -- so it belongs in the quantization
+ * layer. The arithmetic is unchanged; the mxfp4 FNV1a determinism hash is the gate on
+ * that. What remains here are the two K3 entry points, now thin wrappers, kept because
+ * k3_moe and the tests call them by name. */
+double eng_mxfp4_dot_row_g(const void *w, const void *scales, const float *x,
+                           int n, int group);
+void   eng_mxfp4_dequant_row_g(float *out, const void *w, const void *scales,
+                               int n, int group);
+void   eng_mxfp4_init(void);
 
 #if defined(__AVX2__)
 #include <immintrin.h>
@@ -1182,33 +1187,6 @@ void k3_matmul_q8(float *y, const float *x, const void *W, int in, int out)
     }
 }
 
-/* A whole BYTE to its two E2M1 values, so the inner loop does one 8-byte load instead
- * of masking, shifting and two separate lookups. 2 KB, built once, shared by all
- * threads after initialisation. */
-static float K3_E2M1_PAIR[256][2];
-static int   k3_pair_ready = 0;
-
-static void k3_pair_init(void)
-{
-    for (int b = 0; b < 256; b++) {
-        K3_E2M1_PAIR[b][0] = K3_E2M1[b & 0x0F];   /* low nibble  = EVEN element */
-        K3_E2M1_PAIR[b][1] = K3_E2M1[b >> 4];     /* high nibble = ODD element  */
-    }
-    k3_pair_ready = 1;
-}
-
-/* E8M0 byte to its power of two. 255 is NaN by spec and maps to zero. Precomputed
- * because ldexpf in the group loop is a function call the compiler will not inline
- * into a vectorised body. */
-static float K3_E8M0[256];
-static int   k3_e8m0_ready = 0;
-
-static void k3_e8m0_init(void)
-{
-    for (int b = 0; b < 256; b++) K3_E8M0[b] = (b == 255) ? 0.0f : ldexpf(1.0f, b - 127);
-    k3_e8m0_ready = 1;
-}
-
 /* y[rows] = W[rows][in] . x[in], with W read straight out of packed MXFP4 and never
  * materialised as floats. This is not an optimisation; it is what makes streaming
  * experts possible at all.
@@ -1218,114 +1196,33 @@ static void k3_e8m0_init(void)
  * packed nibbles the same expert is 17.55 MB. A matrix-vector product is memory bound,
  * so reading 7.5x fewer bytes makes this kernel FASTER than dequantising first.
  *
- * The loop is structured around the 32-element group because the scale is constant
- * within one: it factors out of the inner sum and is applied once per group instead of
- * once per element. At group 32 each group is exactly 16 packed bytes.
+ * The per-row work now lives in src/quant/mxfp4.c behind the quantization vtable. This
+ * wrapper keeps the row loop, the OpenMP threshold and the signature K3 calls.
  *
- * PRECONDITIONS, none of these are checked, and violating them corrupts memory:
- *   - group <= 64. The expanded group goes into a fixed wf[64] stack buffer.
+ * PRECONDITIONS, none checked, and violating them corrupts memory:
+ *   - group <= 64. The expanded group goes into a fixed stack buffer.
  *   - `in` is even. The packed row stride is in/2 bytes, two elements per byte.
  *   - `packed` is rows x (in/2) bytes; `scales` is rows x ceil(in/group) bytes.
- *   - A scale byte of 255 is NaN by the OCP MX spec and zeroes its whole group.
  *
- * ACCURACY CONTRACT. This kernel is deliberately NOT bit-identical to
- * dequantise-then-k3_matmul, and no caller should assume it is. It sums each group of
- * 32 and applies that group's scale before accumulating; dequantise-then-matmul sums
- * every term of the row under one set of accumulators. The orders differ.
- *
- * The difference is bounded and tiny. Every individual product is EXACT in double, an
- * E2M1 value carries 3 mantissa bits and x carries 24, so the product needs 27 of the
- * 53 available, so only the additions round, and reassociating exact terms moves the
- * result by roughly 1 ULP of double, order 1e-16 relative. The required agreement is
- * 1e-6 against dequantise-then-matmul on real checkpoint weights, gated by
- * tests/unit/test_expert.c. The margin is nine orders of magnitude.
+ * ACCURACY CONTRACT. Deliberately NOT bit-identical to dequantise-then-k3_matmul; see
+ * the contract in src/quant/quant.h. Bounded at ~1e-16 relative, required to agree to
+ * 1e-6, gated by tests/unit/test_expert.c.
  */
 void k3_matmul_mxfp4(float *y, const float *x, const unsigned char *packed,
                      const unsigned char *scales, int in, int rows, int group)
 {
     const int pcols = in / 2;                     /* two elements per byte */
     const int ngrp  = (in + group - 1) / group;
-    const int gbyte = group / 2;
 
-    if (!k3_pair_ready)  k3_pair_init();
-    if (!k3_e8m0_ready)  k3_e8m0_init();
+    /* Warm the lookup tables before the parallel region rather than inside it. */
+    eng_mxfp4_init();
 
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static) if (rows > 64)
 #endif
-    for (int r = 0; r < rows; r++) {
-        const unsigned char *pr = packed + (size_t)r * pcols;
-        const unsigned char *sr = scales + (size_t)r * ngrp;
-        double acc = 0.0;
-
-        for (int g = 0; g < ngrp; g++) {
-            const unsigned char sb = sr[g];
-            if (sb == 255) continue;              /* NaN scale: contribute nothing */
-            const unsigned char *pb = pr + (size_t)g * gbyte;
-            const float *xg = x + (size_t)g * group;
-
-            int n = in - g * group;
-            if (n > group) n = group;
-
-            /* Expand the group to floats first, then take a plain dot product. The
-             * split exists so the second loop can vectorise, which it cannot do while
-             * a table lookup sits in the middle of the accumulation. */
-            float wf[64];                         /* group is 32 for K3; 64 is headroom */
-            const int half = n >> 1;
-            for (int j = 0; j < half; j++) {
-                const float *pv = K3_E2M1_PAIR[pb[j]];
-                wf[2 * j]     = pv[0];
-                wf[2 * j + 1] = pv[1];
-            }
-            if (n & 1) wf[n - 1] = K3_E2M1_PAIR[pb[half]][0];
-
-            /* Four double lanes partitioned by i%4, reduced as (s0+s1)+(s2+s3), in BOTH
-             * the scalar and the AVX2 path so the two agree bit for bit on every
-             * machine. The split is written out rather than left to the compiler
-             * because a sequential floating-point reduction may not be reassociated
-             * without -ffast-math, which this build does not set: expressed as one
-             * serial accumulator, the hottest loop in the engine compiles to scalar
-             * adds no matter what the surrounding code looks like.
-             *
-             * The lane split changes the summation order. See the accuracy contract on
-             * the function above for why that is bounded at ~1e-16 relative. */
-            /* Two fused vector accumulators over the 32-element group, element i to
-             * accumulator (i/4)%2, lanewise-summed then cross-lane paired; the scalar
-             * path is the identical partition with fma(), which is the same IEEE
-             * operation, so both paths stay bit-identical. Same reasoning as the
-             * fp32/bf16 kernels above; the group is short, so two accumulators
-             * suffice to break the add-latency chain. */
-            double sub;
-            int i = 0;
-#if defined(__AVX2__)
-            {
-                __m256d v0 = _mm256_setzero_pd(), v1 = _mm256_setzero_pd();
-                for (; i + 7 < n; i += 8) {
-                    v0 = _mm256_fmadd_pd(_mm256_cvtps_pd(_mm_loadu_ps(wf + i)),
-                                         _mm256_cvtps_pd(_mm_loadu_ps(xg + i)), v0);
-                    v1 = _mm256_fmadd_pd(_mm256_cvtps_pd(_mm_loadu_ps(wf + i + 4)),
-                                         _mm256_cvtps_pd(_mm_loadu_ps(xg + i + 4)), v1);
-                }
-                double a[4];
-                _mm256_storeu_pd(a, _mm256_add_pd(v0, v1));
-                sub = (a[0] + a[1]) + (a[2] + a[3]);
-            }
-#else
-            {
-                double s[8] = {0};
-                for (; i + 7 < n; i += 8)
-                    for (int l = 0; l < 8; l++)
-                        s[l] = fma((double)wf[i + l], (double)xg[i + l], s[l]);
-                double b0 = s[0] + s[4], b1 = s[1] + s[5];
-                double b2 = s[2] + s[6], b3 = s[3] + s[7];
-                sub = (b0 + b1) + (b2 + b3);
-            }
-#endif
-            for (; i < n; i++) sub = fma((double)wf[i], (double)xg[i], sub);
-            acc += sub * (double)K3_E8M0[sb];
-        }
-        y[r] = (float)acc;
-    }
+    for (int r = 0; r < rows; r++)
+        y[r] = (float)eng_mxfp4_dot_row_g(packed + (size_t)r * pcols,
+                                          scales + (size_t)r * ngrp, x, in, group);
 }
 
 void k3_mxfp4_dequant(float *out, const unsigned char *packed,
@@ -1334,28 +1231,8 @@ void k3_mxfp4_dequant(float *out, const unsigned char *packed,
     const int width = pcols * 2;                  /* logical elements per row */
     const int ngrp  = (width + group - 1) / group;
 
-    for (int r = 0; r < rows; r++) {
-        const unsigned char *pr = packed + (size_t)r * pcols;
-        const unsigned char *sr = scales + (size_t)r * ngrp;
-        float *orow = out + (size_t)r * width;
-
-        for (int g = 0; g < ngrp; g++) {
-            /* E8M0: a bare biased exponent. 255 is NaN by spec; map it to zero so one
-             * bad byte cannot poison the row. ldexpf is exact for powers of two. */
-            const unsigned char sb = sr[g];
-            const float mult = (sb == 255) ? 0.0f : ldexpf(1.0f, (int)sb - 127);
-
-            const int lo = g * group;
-            int hi = lo + group;
-            if (hi > width) hi = width;
-
-            for (int i = lo; i < hi; i++) {
-                const unsigned char byte = pr[i >> 1];
-                /* low nibble = EVEN element. Reversing this gives right values in
-                 * wrong places, which every statistical check would pass. */
-                const unsigned char nib = (i & 1) ? (byte >> 4) : (byte & 0x0F);
-                orow[i] = K3_E2M1[nib] * mult;
-            }
-        }
-    }
+    for (int r = 0; r < rows; r++)
+        eng_mxfp4_dequant_row_g(out + (size_t)r * width,
+                                packed + (size_t)r * pcols,
+                                scales + (size_t)r * ngrp, width, group);
 }
