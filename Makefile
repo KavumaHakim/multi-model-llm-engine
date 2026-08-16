@@ -91,7 +91,7 @@ LDFLAGS  ?= -lm $(OMP_LDFLAGS) -pthread
 INCLUDES := -Iinclude -Iinclude/k3 -Ithird_party \
             -Isrc/core -Isrc/io -Isrc/cache -Isrc/model -Isrc/tokenizer \
             -Isrc/tensor -Isrc/storage -Isrc/formats -Isrc/runtime -Isrc/kernels \
-            -Isrc/quant -Isrc/models -Isrc/models/kimi
+            -Isrc/quant -Isrc/models -Isrc/models/kimi -Isrc/models/qwen3
 
 # ----------------------------------------------------------------------------- files --
 # The generic runtime layer. Model-independent by construction: nothing under src/tensor,
@@ -112,7 +112,7 @@ GENERIC_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(GENERIC_SRC))
 # without any backend present, which is what stops the runtime growing an `if (arch ==
 # ...)`. Folding these in there made every generic test drag in kimi.o and, through it,
 # k3_ops -- a link error that was really a layering violation.
-MODEL_SRC := src/models/registry.c src/models/kimi/kimi.c
+MODEL_SRC := src/models/registry.c src/models/kimi/kimi.c src/models/qwen3/qwen3.c
 MODEL_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(MODEL_SRC))
 
 ENGINE_SRC := src/core/k3_ops.c \
@@ -209,6 +209,16 @@ $(BIN)/test_model: tests/unit/test_model.c $(BUILD)/src/models/registry.o \
                    $(BUILD)/src/runtime/planner.o $(BUILD)/src/kernels/kernel.o \
                    $(K3_OPS_OBJ) | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+
+# Needs the 5 GB container, so it is NOT in UNIT_TESTS: `make test` must stay runnable
+# on a machine without the model. `make qwen3` runs it.
+$(BIN)/test_qwen3: tests/unit/test_qwen3.c $(MODEL_OBJ) $(GENERIC_OBJ) \
+                   $(BUILD)/src/io/k3_st.o $(K3_OPS_OBJ) | $(BIN)
+	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+
+.PHONY: qwen3
+qwen3: $(BIN)/test_qwen3
+	./$(BIN)/test_qwen3 tests/fixtures/gguf/qwen3_golden.bin
 
 $(BIN)/test_gguf: tests/unit/test_gguf.c $(BUILD)/src/formats/gguf.o \
                   $(BUILD)/src/storage/file.o $(BUILD)/src/tensor/dtype.o \

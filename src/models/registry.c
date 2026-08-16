@@ -12,6 +12,7 @@
  * tests/unit/test_model.c asserts it by registering a synthetic backend that shares no
  * code with either real one. */
 extern const EngModelBackend eng_backend_kimi_k3;
+extern const EngModelBackend eng_backend_qwen3;
 
 static const EngModelBackend *REG[ENG_MAX_BACKENDS];
 static int reg_n = 0;
@@ -22,6 +23,7 @@ void eng_model_register_builtins(void)
     if (reg_ready) return;
     reg_ready = 1;          /* set FIRST: register() calls back into find() */
     eng_model_register(&eng_backend_kimi_k3);
+    eng_model_register(&eng_backend_qwen3);
 }
 
 int eng_model_register(const EngModelBackend *b)
