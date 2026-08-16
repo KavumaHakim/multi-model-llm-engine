@@ -1,0 +1,27 @@
+Hello, world	9707, 11, 1879
+hello	14990
+ hello	23811
+  hello	220, 23811
+Hello World Again	9707, 4337, 13759
+don't	15007, 944
+I'll can't we've they're it's	40, 3278, 646, 944, 582, 3003, 807, 2299, 432, 594
+2024	17, 15, 17, 19
+3.14159	18, 13, 16, 19, 16, 20, 24
+a1b2c3	64, 16, 65, 17, 66, 18
+!!!	12069
+ ...	2503
+line one\nline two	1056, 825, 198, 1056, 1378
+a\n\nb	64, 271, 65
+\ttabbed	58149, 2721
+trailing   	376, 14277, 262
+int main(void) { return 0; }	396, 1887, 4333, 8, 314, 470, 220, 15, 26, 335
+the quick brown fox jumps over the lazy dog	1782, 3974, 13876, 38835, 34208, 916, 279, 15678, 5562
+CamelCaseIdentifier	25406, 301, 4207, 8714
+snake_case_name	72139, 19096, 1269
+<|im_start|>user	151644, 872
+<|im_start|>system\nYou are helpful.<|im_end|>	151644, 8948, 198, 2610, 525, 10950, 13, 151645
+café	924, 58858
+unicode	24519
+	
+你好	108386
+x é y	87, 3958, 379

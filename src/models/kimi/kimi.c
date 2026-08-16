@@ -54,6 +54,12 @@ static int is_dir(const char *p)
     return stat(p, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
+/* A config is a small JSON file. Anything larger is not one, and reading it would be a
+ * probe with a cost proportional to the thing it is declining to claim -- pointing this
+ * backend at a 5 GB GGUF used to read the whole container into memory before deciding
+ * it was not K3. A probe must be cheap enough to run over every registered backend. */
+#define K3_MAX_CONFIG_BYTES (16 << 20)
+
 static char *slurp(const char *p)
 {
     FILE *f = fopen(p, "rb");
@@ -61,7 +67,7 @@ static char *slurp(const char *p)
     fseek(f, 0, SEEK_END);
     const long n = ftell(f);
     fseek(f, 0, SEEK_SET);
-    if (n < 0) { fclose(f); return NULL; }
+    if (n < 0 || n > K3_MAX_CONFIG_BYTES) { fclose(f); return NULL; }
     char *b = (char *)malloc((size_t)n + 1);
     if (!b) { fclose(f); return NULL; }
     const size_t got = fread(b, 1, (size_t)n, f);
@@ -93,6 +99,18 @@ static int kimi_probe(const char *path)
     if (!path) return 0;
     char pbuf[1024];
     char *cp = config_path(path, pbuf, sizeof pbuf);
+
+    /* Cheap rejection before any allocation: a config starts with '{' after optional
+     * whitespace. This is what stops a container in another format being read in full
+     * just to be declined. */
+    {
+        FILE *probe = fopen(cp, "rb");
+        if (!probe) return 0;
+        int c;
+        do { c = fgetc(probe); } while (c == ' ' || c == '\t' || c == '\n' || c == '\r');
+        fclose(probe);
+        if (c != '{') return 0;
+    }
 
     char *txt = slurp(cp);
     if (!txt) return 0;

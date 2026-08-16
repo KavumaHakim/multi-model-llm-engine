@@ -73,6 +73,11 @@ typedef struct {
     double   bytes_per_weight;
 } EngModelFacts;
 
+/* What an unrequested context defaults to. Deliberately modest: see the reasoning in
+ * eng_plan. Long contexts are available by asking for them, at a cost the planner then
+ * states rather than absorbs silently. */
+#define ENG_DEFAULT_CONTEXT 4096
+
 typedef struct {
     int64_t memory_budget;
     int     threads;

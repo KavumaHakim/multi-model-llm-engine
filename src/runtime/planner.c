@@ -105,7 +105,42 @@ int eng_plan(EngPlan *plan, const EngHwInfo *hw, const EngModelFacts *m,
     needs.activations = m->activation_bytes;
     needs.scratch     = m->scratch_bytes;
     needs.kv_per_pos  = m->kv_bytes_per_pos;
-    needs.context     = req->context > 0 ? req->context : m->context_max;
+
+    /* CONTEXT IS NOT WORTH MAXIMISING BY DEFAULT, and the first version of this planner
+     * got it wrong in an instructive way.
+     *
+     * Taking "as much context as fits" produced, on the reference machine: a 2.33 GB
+     * budget of which the KV cache claimed 1.38 GB (59%) to reach 4,691 positions,
+     * leaving 122 MB for weights -- enough to pin ZERO of 36 layers, a 0% streamer hit
+     * rate. Every layer would then be re-read from storage on every token, for a
+     * context length the user never asked for.
+     *
+     * The two resources are not comparable in value. Weight residency pays back on
+     * EVERY token; context length only sets how long a conversation may get. So an
+     * unrequested context defaults to something modest and the KV cache is capped at a
+     * share of the budget. An EXPLICIT --context is honoured in full (reduced only if
+     * it genuinely cannot fit), because then the user has said which they want. */
+    if (req->context > 0) {
+        needs.context = req->context;
+    } else {
+        needs.context = m->context_max > 0 && m->context_max < ENG_DEFAULT_CONTEXT
+                      ? m->context_max : ENG_DEFAULT_CONTEXT;
+        if (m->kv_bytes_per_pos > 0) {
+            /* At most a quarter of what is left after the fixed costs. */
+            const int64_t spare = plan->memory_budget - m->resident_bytes
+                                - m->activation_bytes - m->scratch_bytes;
+            const int64_t kv_cap = spare > 0 ? spare / 4 : 0;
+            const int fits = eng_mem_max_context(kv_cap, m->kv_bytes_per_pos);
+            if (fits > 0 && fits < needs.context) {
+                eng_mem_human(kv_cap, a, sizeof a);
+                note(plan, "context %d (not the model's %d): the KV cache is held to %s, "
+                           "a quarter of the budget, because weight residency repays on "
+                           "every token while context only sets how long a run may get",
+                     fits, m->context_max, a);
+                needs.context = fits;
+            }
+        }
+    }
     /* One layer must fit, plus a second slot so reads can overlap compute. Below that
      * the engine still runs, just serially -- but a budget that cannot hold two layers
      * is a configuration worth flagging rather than silently accepting. */

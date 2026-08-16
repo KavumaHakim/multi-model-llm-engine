@@ -104,7 +104,8 @@ GENERIC_SRC := src/tensor/dtype.c src/tensor/tensor.c \
                src/kernels/kernel.c src/kernels/kernel_avx2.c \
                src/quant/quant.c src/quant/mxfp4.c src/quant/q8_0.c \
                src/quant/q4_k.c src/quant/q6_k.c \
-               src/formats/gguf.c
+               src/formats/gguf.c \
+               src/tokenizer/bpe.c
 GENERIC_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(GENERIC_SRC))
 
 # Model backends. NOT part of GENERIC_OBJ, and the distinction is the architecture
@@ -136,6 +137,11 @@ K3_OPS_OBJ := $(BUILD)/src/core/k3_ops.o $(QUANT_OBJ) \
 CLI_SRC    := src/cli/k3_run.c
 CLI_BIN    := $(BIN)/k3
 
+# The multi-model CLI. bin/k3 stays exactly as it was -- it is still the way to run K3,
+# whose forward pass has not yet migrated onto the backend interface.
+ENGINE_CLI_SRC := src/app/cli.c
+ENGINE_CLI_BIN := $(BIN)/engine
+
 # Tests that need no checkpoint. These run in CI on every push.
 UNIT_TESTS := test_ops test_cache test_st test_cfg test_tok scale_test k3_model \
               test_tensor test_cache_generic test_streamer test_planner test_kernels \
@@ -157,7 +163,7 @@ TOK_FILES  ?= $(HOME)/k3model
 .PHONY: all test test-all bench portable debug asan ubsan format clean install help \
         tok cfg ops cache st oracle weights-test
 
-all: $(CLI_BIN)
+all: $(CLI_BIN) $(ENGINE_CLI_BIN)
 
 $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -203,11 +209,12 @@ $(BIN)/test_kernels: tests/unit/test_kernels.c $(BUILD)/src/kernels/kernel.o \
 # backend needs k3_ops for k3_layer_scratch/k3_moe_scratch, which is deliberate --
 # inspect reports the same scratch figures the run path actually allocates rather than
 # an independent estimate of them.
-$(BIN)/test_model: tests/unit/test_model.c $(BUILD)/src/models/registry.o \
-                   $(BUILD)/src/models/kimi/kimi.o $(BUILD)/src/io/k3_st.o \
-                   $(BUILD)/src/runtime/hwinfo.o $(BUILD)/src/runtime/memory.o \
-                   $(BUILD)/src/runtime/planner.o $(BUILD)/src/kernels/kernel.o \
-                   $(K3_OPS_OBJ) | $(BIN)
+# $(MODEL_OBJ), not the individual backends: the registry references every built-in by
+# symbol, so a backend added there must be linked here too or the link fails. Listing
+# them one by one meant adding qwen3 broke this target. $^ removes duplicates, so the
+# overlap between GENERIC_OBJ and K3_OPS_OBJ is harmless.
+$(BIN)/test_model: tests/unit/test_model.c $(MODEL_OBJ) $(GENERIC_OBJ) \
+                   $(BUILD)/src/io/k3_st.o $(K3_OPS_OBJ) | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
 # Needs the 5 GB container, so it is NOT in UNIT_TESTS: `make test` must stay runnable
@@ -216,9 +223,22 @@ $(BIN)/test_qwen3: tests/unit/test_qwen3.c $(MODEL_OBJ) $(GENERIC_OBJ) \
                    $(BUILD)/src/io/k3_st.o $(K3_OPS_OBJ) | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
-.PHONY: qwen3
+$(ENGINE_CLI_BIN): $(ENGINE_CLI_SRC) $(ENGINE_OBJ) $(BUILD)/src/io/k3_st.o | $(BIN)
+	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+
+$(BIN)/test_tokenizer: tests/unit/test_tokenizer.c $(BUILD)/src/tokenizer/bpe.o \
+                       $(BUILD)/src/formats/gguf.o $(BUILD)/src/storage/file.o \
+                       $(BUILD)/src/tensor/dtype.o $(BUILD)/src/tensor/tensor.o | $(BIN)
+	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+
+# Both need the container, so neither is in UNIT_TESTS: `make test` must stay runnable
+# without the 5 GB model.
+.PHONY: qwen3 tokenizer
 qwen3: $(BIN)/test_qwen3
 	./$(BIN)/test_qwen3 tests/fixtures/gguf/qwen3_golden.bin
+
+tokenizer: $(BIN)/test_tokenizer
+	./$(BIN)/test_tokenizer tests/fixtures/gguf/tokenizer_golden.txt
 
 $(BIN)/test_gguf: tests/unit/test_gguf.c $(BUILD)/src/formats/gguf.o \
                   $(BUILD)/src/storage/file.o $(BUILD)/src/tensor/dtype.o \
