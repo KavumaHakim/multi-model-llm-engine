@@ -3,7 +3,45 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+Entries from 1.0.0 down are **kimi-k3-in-c's**, kept because this project is a
+derivative of it and that history explains why the runtime is shaped as it is. Anything
+above the divider is this project's.
+
+## [Unreleased] — multi-model-llm-engine
+
+### Added
+
+- **Generic runtime**, extracted from the K3 implementation: dtype registry and tensor
+  descriptors that can name a weight still on disk; a storage layer behind a format
+  interface; a keyed weight cache; a pinned-prefix block streamer; an explicit memory
+  budget with a partition plan; hardware detection and an execution planner; CPU kernels
+  with runtime AVX2 dispatch and per-backend numerical policy; a quantization vtable.
+- **Model backend interface** and registry. Architectures are isolated behind it; the
+  runtime carries no architecture conditionals.
+- **GGUF reader**, with Q4_K and Q6_K kernels validated bit-exactly against an
+  independent numpy implementation.
+- **Qwen3 backend** — grouped-query attention with QK-norm, RoPE at θ=1e6, dense
+  SwiGLU, untied embeddings — validated tensor by tensor against a numpy reference to a
+  worst relative RMS of 3.89e-06 across 49 tensors.
+- **Byte-level BPE tokenizer** for GGUF vocabularies, and a multi-model CLI with
+  `inspect`, `run`, `benchmark` and `list`.
+
+### Changed
+
+- Kimi K3 now uses the generic storage, cache, streamer and quantization layers. Its
+  behaviour is unchanged: the two FNV1a determinism hashes that pin its kernel output
+  are gated on every commit.
+- Prompt positions no longer compute logits that are discarded, cutting prompt tokens
+  from 90.5 s to 26.5 s each.
+- Timing is wall clock throughout. The previous instrumentation used `clock()`, which
+  sums across threads under OpenMP and overstated compute by roughly the thread count.
+
+### Not yet migrated
+
+- K3's forward pass still runs through the original `bin/k3`; its backend declares that
+  rather than claiming an execution path it does not have.
+
+---
 
 ## [1.0.0] - 2026-08-07
 

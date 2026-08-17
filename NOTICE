@@ -1,8 +1,51 @@
-kimi-k3-in-c
-Copyright 2026 the kimi-k3-in-c authors
+multi-model-llm-engine
+Copyright 2026 the multi-model-llm-engine authors
 
 This product includes software developed as part of this project, licensed under the
 Apache License, Version 2.0.
+
+================================================================================
+DERIVATIVE WORK
+================================================================================
+
+This project is a DERIVATIVE of kimi-k3-in-c:
+
+  https://github.com/FareedKhan-dev/kimi-k3-in-c
+  Copyright 2026 the kimi-k3-in-c authors
+  Licensed under the Apache License, Version 2.0
+
+Per section 4(b) of the Apache License, notice is given that files from that project
+have been modified. The nature of the change is substantial: the original is a
+single-architecture engine for Kimi K3, and this is a multi-architecture runtime in
+which K3 is one backend among others.
+
+WHAT WAS TAKEN, and remains upstream's work in substance:
+
+  The techniques that let a model far larger than RAM execute at all -- weight streaming
+  from storage, the routed-expert cache, prefix pinning against a cyclic layer scan,
+  overlapping reads with compute, fused dot products over packed quantised weights, and
+  the bit-identical scalar/vector reduction order that makes output independent of the
+  memory budget. The Kimi K3 model implementation (KDA, gated MLA, Stable LatentMoE),
+  its safetensors reader, its trunk packer, and its test and benchmark harnesses.
+
+WHAT WAS CHANGED:
+
+  Those subsystems were extracted from the K3 implementation into a model-independent
+  runtime: a dtype registry and tensor abstraction, a storage layer with a format
+  interface, a keyed weight cache, a pinned-prefix block streamer, a memory planner with
+  hardware detection, a CPU kernel layer with runtime ISA dispatch and per-backend
+  numerical policy, a quantization vtable, and a model backend interface with a
+  registry. K3-specific code was moved behind that interface without changing its
+  behaviour; its two determinism hashes are unchanged and gated on every commit.
+
+WHAT WAS ADDED:
+
+  A GGUF reader; Q4_K and Q6_K kernels; a Qwen3 backend (grouped-query attention with
+  QK-norm, RoPE, dense SwiGLU); a byte-level BPE tokenizer for GGUF vocabularies; a
+  multi-model command-line interface; and independent numpy reference implementations
+  used to validate the above.
+
+Upstream's README is preserved verbatim at docs/README-kimi-k3.md.
 
 ================================================================================
 THIRD-PARTY COMPONENTS
