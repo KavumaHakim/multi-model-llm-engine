@@ -84,6 +84,34 @@ typedef struct {
     const char  *notes;        /* one line, shown by `inspect` */
 } EngModelCaps;
 
+enum {
+    /* Produce logits for this position. Omit it while consuming a prompt: only the
+     * final position's distribution is ever read. The sequence state is updated either
+     * way, so the KV cache is unaffected. */
+    ENG_DEC_LOGITS = 1u << 0
+};
+
+/* Run counters, in terms every architecture shares.
+ *
+ * WALL SECONDS THROUGHOUT. clock() sums across threads under OpenMP, so on four threads
+ * it reports about four times the elapsed time; mixing it with a monotonic read timer
+ * makes compute look several times larger than it is, which this engine's first
+ * instrumentation did.
+ *
+ * `io_stall_s` is what the decode WAITED for, which is not the same as the time the
+ * device spent transferring: a prefetched read costs bytes but no stall. The gap
+ * between io_stall_s and bytes_read/rate is what overlapping bought. */
+typedef struct {
+    double  total_s;
+    double  io_stall_s;      /* blocked waiting for weights                      */
+    double  compute_s;       /* total_s - io_stall_s                             */
+    int64_t bytes_read;      /* weight bytes moved, however they were paid for   */
+    double  device_s;        /* time inside the read loop: a device rate         */
+    int     steps;
+    int     logit_steps;     /* steps that produced a distribution               */
+    char    notes[160];      /* one line the backend wants surfaced              */
+} EngRunStats;
+
 /* What a backend needs in order to load. The runtime has already chosen the plan; the
  * backend does not get to argue with it, only to fail if it cannot comply. */
 typedef struct {
@@ -123,16 +151,32 @@ typedef struct EngModelBackend {
      * allocating and measuring. */
     int64_t (*state_bytes)(const EngModel *m, int context);
 
-    /* One incremental decode step: consume `token` at `pos`, update state, produce
-     * logits. Returns 0 on success.
+    /* One incremental decode step: consume `token` at `pos`, update state, and produce
+     * logits if asked. Returns 0 on success.
      *
      * `pos` is passed explicitly rather than tracked inside the state because the
      * caller may rewind (speculative decoding, beam search) and a hidden counter would
-     * make that a backend-by-backend correctness question. */
-    int (*decode)(EngModel *m, EngSeqState *s, int token, int pos);
+     * make that a backend-by-backend correctness question.
+     *
+     * `flags` carries ENG_DEC_LOGITS. It is a PER-CALL property, not model state,
+     * because the same model alternates between positions whose logits are read and
+     * positions whose are not -- every prompt token but the last falls in the second
+     * group, and computing them there costs a full vocabulary-wide matmul plus, for a
+     * streamed LM head, a re-read of it. On Qwen3 that is 510 MB and 151,936 rows
+     * thrown away per prompt token. */
+    int (*decode)(EngModel *m, EngSeqState *s, int token, int pos, uint32_t flags);
 
     /* Logits from the last decode. Borrowed, valid until the next decode. */
     const float *(*logits)(const EngModel *m, int *n_vocab);
+
+    /* OPTIONAL, may be NULL. Run counters in terms every architecture shares, so an
+     * application can report where the time went without knowing which backend it has.
+     *
+     * The alternative -- the CLI calling qwen3_profile() directly -- would put an
+     * architecture conditional in the application, which is the thing this interface
+     * exists to prevent. A backend with nothing to report leaves it NULL and the caller
+     * prints nothing. */
+    void (*stats)(const EngModel *m, EngRunStats *out);
 
     void (*caps)(EngModelCaps *out);
 } EngModelBackend;

@@ -67,6 +67,31 @@ void qwen3_set_capture(EngModel *m, Qwen3Capture cb, void *ctx);
  * from compute time without the backend having to grow its own profiling vocabulary. */
 struct EngStreamer *qwen3_streamer(EngModel *m);
 
+/* Where a decode's WALL time went.
+ *
+ * Wall, not CPU. clock() sums across threads under OpenMP, so on four threads it
+ * reports roughly four times the elapsed time and cannot be compared against the
+ * streamer's monotonic read timer. An earlier version of this engine's instrumentation
+ * did exactly that and made compute look several times larger than it is. */
+typedef struct {
+    double total_s;
+    double embed_s;     /* the embedding row: one read plus a dequant   */
+    double layer_s;     /* everything inside the layer loop             */
+    double stall_s;     /* of which, blocked in eng_streamer_get        */
+    double lmhead_s;    /* final norm and the vocabulary projection     */
+    int64_t lmhead_bytes;
+    int     steps;
+    int     logit_steps;
+} Qwen3Profile;
+
+void qwen3_profile(const EngModel *m, Qwen3Profile *out);
+void qwen3_profile_reset(EngModel *m);
+
+/* Is the LM head held in RAM? Decided at load from the plan; reported because it is the
+ * single largest lever on decode time and a caller comparing runs needs to know which
+ * way it went. */
+int qwen3_lmhead_resident(const EngModel *m);
+
 #ifdef __cplusplus
 }
 #endif

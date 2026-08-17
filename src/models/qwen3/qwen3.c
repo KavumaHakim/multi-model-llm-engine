@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* ------------------------------------------------------------------ layout -- */
 
@@ -53,10 +54,37 @@ struct EngModel {
     float *x, *xn, *q, *k, *v, *att, *gate, *up, *ffn, *scores;
     float *logits;
 
+    /* The LM head, held in RAM when the budget allowed. NULL means it is read in chunks
+     * from storage on every position whose logits are wanted. */
+    unsigned char *lm_resident;
+    int64_t        lm_bytes;
+
+    Qwen3Profile prof;
+
     Qwen3Capture cap;
     void        *cap_ctx;
     int          verbose;
 };
+
+static double now_s(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (double)t.tv_sec + (double)t.tv_nsec * 1e-9;
+}
+
+void qwen3_profile(const EngModel *m, Qwen3Profile *out)
+{
+    if (!m || !out) return;
+    *out = m->prof;
+}
+
+void qwen3_profile_reset(EngModel *m)
+{
+    if (m) memset(&m->prof, 0, sizeof m->prof);
+}
+
+int qwen3_lmhead_resident(const EngModel *m) { return m && m->lm_resident ? 1 : 0; }
 
 struct EngSeqState {
     int    context, n_seen;
@@ -305,6 +333,62 @@ static EngModel *qwen3_load(const EngLoadReq *req)
         if (rc) { free(blocks); goto fail; }
     }
 
+    /* Decide the LM head BEFORE the streamer is built, because the two draw on the same
+     * weight budget. Building the streamer first and then allocating the head on top
+     * would overshoot the plan by half a gigabyte -- exactly the kind of quiet overrun
+     * the memory manager exists to prevent. See the reasoning at the allocation below. */
+    int64_t lm_need = 0, big_layer = 0;
+    int want_lm_resident = 0;
+    {
+        const EngQuantOps *hq = eng_quant_ops(m->lm_head->dtype);
+        const int64_t hrow = hq ? hq->row_bytes(m->d_model)
+                                : (int64_t)m->d_model * (int64_t)sizeof(float);
+        lm_need = (int64_t)m->vocab * hrow;
+        for (int L = 0; L < m->n_layers; L++)
+            if (blocks[L].nbytes > big_layer) big_layer = blocks[L].nbytes;
+
+        const int64_t have = req->plan ? req->plan->stream_budget : (512LL << 20);
+
+        /* RESIDENCY IS TAKEN ONLY WHEN IT COSTS THE STREAMER ALMOST NOTHING, and that
+         * rule comes from a measurement that CONTRADICTED the obvious argument.
+         *
+         * The obvious argument: the LM head is a 511 MB serial read that cannot overlap
+         * compute, while layer reads are prefetched, so buying it out of the budget
+         * should pay. A first A/B appeared to confirm it -- 43.3 s per generated token
+         * streamed against 29.3 s resident, 1.48x. That comparison was confounded: the
+         * two arms had different memory budgets, and the faster one simply had more.
+         *
+         * Repeated properly -- one binary, one 2400 MB budget, only this decision
+         * changed, page cache dropped between arms:
+         *
+         *     streamed   6/36 layers pinned    33.2 s per generated token
+         *     resident   2/36 layers pinned    85.3 s per generated token
+         *
+         * Residency is 2.57x SLOWER. Spending 511 MB here costs about four pinned
+         * layers, and a pinned layer is read on EVERY step while the LM head is read
+         * only on steps that produce logits. During generation that is at best a wash;
+         * once the streamer drops to two pinned layers it is a rout.
+         *
+         * So the head is held only when the budget is large enough that the layers are
+         * mostly pinned anyway -- half of them, here. On a host that can hold the whole
+         * model this is free; on a constrained one it correctly never fires.
+         *
+         * ENG_LM_RESIDENT=0/1 forces the decision. It exists because the confounded
+         * comparison above cost real time, and a knob that lets the A/B run on ONE
+         * binary at ONE budget is the cheapest way to avoid repeating that mistake. */
+        const char *force = getenv("ENG_LM_RESIDENT");
+        if (force && (*force == '0' || *force == '1')) {
+            want_lm_resident = (*force == '1');
+            if (want_lm_resident && have < lm_need + big_layer) {
+                fprintf(stderr, "qwen3: ENG_LM_RESIDENT=1 but the weight budget cannot "
+                                "hold the head and a ring slot; ignoring\n");
+                want_lm_resident = 0;
+            }
+        } else {
+            want_lm_resident = have >= lm_need + (int64_t)(m->n_layers / 2) * big_layer;
+        }
+    }
+
     {
         EngStreamerCfg cfg;
         memset(&cfg, 0, sizeof cfg);
@@ -312,7 +396,8 @@ static EngModel *qwen3_load(const EngLoadReq *req)
         cfg.store = g->store;
         cfg.blocks = blocks;
         cfg.nblocks = m->n_layers;
-        cfg.budget_bytes = req->plan ? req->plan->stream_budget : (512LL << 20);
+        cfg.budget_bytes = (req->plan ? req->plan->stream_budget : (512LL << 20))
+                         - (want_lm_resident ? lm_need : 0);
         cfg.ring_want = 2;
         cfg.async = 1;
         cfg.hugepages = -1;
@@ -347,6 +432,46 @@ static EngModel *qwen3_load(const EngLoadReq *req)
         if (m->head_chunk > m->vocab) m->head_chunk = m->vocab;
         m->headbuf = (unsigned char *)malloc((size_t)m->head_chunk * (size_t)hrow);
         if (!m->rowbuf || !m->headbuf) goto fail;
+
+        /* HOLD THE LM HEAD IN RAM WHEN THE BUDGET CAN AFFORD IT.
+         *
+         * The naive arithmetic says this is a wash: 510 MB spent here is 510 MB not
+         * spent pinning layers, and either way it saves the same bytes per token. That
+         * arithmetic is wrong for two reasons.
+         *
+         *   The layer reads OVERLAP compute -- the walk order is fixed, so the streamer
+         *   prefetches layer L+1 while L is being multiplied. The LM head read cannot:
+         *   it happens at the end of the step and its bytes are needed immediately. So
+         *   a byte of LM head costs more wall time than a byte of layer.
+         *
+         *   Prompt positions do not read it at all now that logits are optional, while
+         *   every layer is read on every position. So on a long prompt the layers are
+         *   the hotter resource and this trade only applies to generated tokens.
+         *
+         * The decision was made above, before the streamer claimed its share -- see the
+         * measurement there for why it is rarely taken. */
+        if (want_lm_resident) {
+            m->lm_resident = (unsigned char *)malloc((size_t)lm_need);
+            if (m->lm_resident) {
+                if (g->store->read(g->store, m->lm_head->file_off, lm_need,
+                                   m->lm_resident) != lm_need) {
+                    free(m->lm_resident);
+                    m->lm_resident = NULL;
+                } else {
+                    m->lm_bytes = lm_need;
+                    if (req->verbose)
+                        printf("qwen3: LM head held resident (%.0f MB); it is a serial "
+                               "read that cannot overlap compute\n",
+                               (double)lm_need / 1e6);
+                }
+            }
+        } else if (req->verbose) {
+            printf("qwen3: LM head streamed (%.0f MB per logit step). Holding it needs "
+                   "%.2f GB of weight budget -- below that it costs more in unpinned "
+                   "layers than it saves (measured 2.57x slower at 2.4 GB).\n",
+                   (double)lm_need / 1e6,
+                   (double)(lm_need + (int64_t)(m->n_layers / 2) * big_layer) / 1e9);
+        }
     }
 
     /* ---- scratch ---- */
@@ -376,6 +501,7 @@ fail:
         eng_streamer_destroy(m->stream);
         gguf_close(&m->gguf);
         free(m->slot); free(m->out_norm); free(m->rowbuf); free(m->headbuf);
+        free(m->lm_resident);
         free(m->x); free(m->xn); free(m->q); free(m->k); free(m->v); free(m->att);
         free(m->gate); free(m->up); free(m->ffn); free(m->scores); free(m->logits);
         free(m);
@@ -389,6 +515,7 @@ static void qwen3_destroy(EngModel *m)
     eng_streamer_destroy(m->stream);
     gguf_close(&m->gguf);
     free(m->slot); free(m->out_norm); free(m->rowbuf); free(m->headbuf);
+    free(m->lm_resident);
     free(m->x); free(m->xn); free(m->q); free(m->k); free(m->v); free(m->att);
     free(m->gate); free(m->up); free(m->ffn); free(m->scores); free(m->logits);
     free(m);
@@ -453,9 +580,10 @@ static void head_norm(float *v, int nheads, int hd, const float *w, float eps)
         eng_rmsnorm(v + (size_t)h * hd, v + (size_t)h * hd, w, hd, eps);
 }
 
-static int qwen3_decode(EngModel *m, EngSeqState *s, int token, int pos)
+static int qwen3_decode(EngModel *m, EngSeqState *s, int token, int pos, uint32_t flags)
 {
     if (!m || !s) return -1;
+    const double t_start = now_s();
     if (token < 0 || token >= m->vocab) {
         fprintf(stderr, "qwen3: token %d out of range (vocab %d)\n", token, m->vocab);
         return -1;
@@ -472,6 +600,7 @@ static int qwen3_decode(EngModel *m, EngSeqState *s, int token, int pos)
     const int kvw = nkv * hd;
 
     /* ---- embedding: one row, read on demand ---- */
+    const double t_embed = now_s();
     {
         const EngQuantOps *eq = eng_quant_ops(m->embd->dtype);
         if (eq) {
@@ -486,10 +615,18 @@ static int qwen3_decode(EngModel *m, EngSeqState *s, int token, int pos)
         }
     }
     emit(m, "embedding", m->x, m->d_model);
+    m->prof.embed_s += now_s() - t_embed;
 
     /* ---- layers ---- */
+    const double t_layers = now_s();
     for (int L = 0; L < m->n_layers; L++) {
+        /* Timed separately: this is where the step BLOCKS on storage. The streamer's own
+         * counter times its read loop, which is the device rate; this is what the
+         * caller actually waits for, and the gap between them is what prefetching
+         * hides. */
+        const double t_wait = now_s();
         unsigned char *base = eng_streamer_get(m->stream, L, NULL);
+        m->prof.stall_s += now_s() - t_wait;
         if (!base) return -1;
         /* The walk order is fixed, so the next read can start now and overlap this
          * layer's compute. Never wrong, because there is nothing to predict. */
@@ -578,34 +715,84 @@ static int qwen3_decode(EngModel *m, EngSeqState *s, int token, int pos)
         snprintf(nm, sizeof nm, "layer%d", L);
         emit(m, nm, m->x, m->d_model);
     }
+    m->prof.layer_s += now_s() - t_layers;
 
-    /* ---- final norm and the LM head ---- */
-    eng_rmsnorm(m->xn, m->x, m->out_norm, m->d_model, m->eps);
-    emit(m, "final_norm", m->xn, m->d_model);
+    /* ---- final norm and the LM head ----
+     *
+     * SKIPPED ENTIRELY when the caller has not asked for logits. Every prompt position
+     * but the last falls here: its distribution is never read, and computing it costs a
+     * 151,936-row projection plus, when the head is streamed, a 510 MB read. The
+     * sequence state was already updated above, so the KV cache is identical either
+     * way and the skip cannot change a later position's output. */
+    if (flags & ENG_DEC_LOGITS) {
+        const double t_head = now_s();
+        eng_rmsnorm(m->xn, m->x, m->out_norm, m->d_model, m->eps);
+        emit(m, "final_norm", m->xn, m->d_model);
 
-    {
         const EngQuantOps *hq = eng_quant_ops(m->lm_head->dtype);
         const int64_t hrow = hq ? hq->row_bytes(m->d_model)
                                 : (int64_t)m->d_model * (int64_t)sizeof(float);
-        for (int r0 = 0; r0 < m->vocab; r0 += m->head_chunk) {
-            int n = m->head_chunk;
-            if (r0 + n > m->vocab) n = m->vocab - r0;
-            const int64_t want = (int64_t)n * hrow;
-            if (g->store->read(g->store, m->lm_head->file_off + (int64_t)r0 * hrow,
-                               want, m->headbuf) != want) return -1;
+
+        if (m->lm_resident) {
             if (hq) {
-                if (eng_matmul_quant(m->logits + r0, m->xn, m->headbuf, NULL,
-                                     m->d_model, n, m->lm_head->dtype) != 0) return -1;
+                if (eng_matmul_quant(m->logits, m->xn, m->lm_resident, NULL,
+                                     m->d_model, m->vocab, m->lm_head->dtype) != 0)
+                    return -1;
             } else {
-                eng_matmul_f32(m->logits + r0, m->xn, (const float *)m->headbuf,
-                               m->d_model, n, ENG_NUM_FAST);
+                eng_matmul_f32(m->logits, m->xn, (const float *)m->lm_resident,
+                               m->d_model, m->vocab, ENG_NUM_FAST);
+            }
+        } else {
+            for (int r0 = 0; r0 < m->vocab; r0 += m->head_chunk) {
+                int n = m->head_chunk;
+                if (r0 + n > m->vocab) n = m->vocab - r0;
+                const int64_t want = (int64_t)n * hrow;
+                if (g->store->read(g->store, m->lm_head->file_off + (int64_t)r0 * hrow,
+                                   want, m->headbuf) != want) return -1;
+                m->prof.lmhead_bytes += want;
+                if (hq) {
+                    if (eng_matmul_quant(m->logits + r0, m->xn, m->headbuf, NULL,
+                                         m->d_model, n, m->lm_head->dtype) != 0) return -1;
+                } else {
+                    eng_matmul_f32(m->logits + r0, m->xn, (const float *)m->headbuf,
+                                   m->d_model, n, ENG_NUM_FAST);
+                }
             }
         }
+        emit(m, "logits", m->logits, m->vocab);
+        m->prof.lmhead_s += now_s() - t_head;
+        m->prof.logit_steps++;
     }
-    emit(m, "logits", m->logits, m->vocab);
 
     if (pos + 1 > s->n_seen) s->n_seen = pos + 1;
+    m->prof.total_s += now_s() - t_start;
+    m->prof.steps++;
     return 0;
+}
+
+static void qwen3_stats(const EngModel *m, EngRunStats *out)
+{
+    if (!m || !out) return;
+    memset(out, 0, sizeof *out);
+
+    EngStreamerStats ss;
+    eng_streamer_stats(m->stream, &ss);
+
+    out->total_s     = m->prof.total_s;
+    out->io_stall_s  = m->prof.stall_s;
+    out->compute_s   = m->prof.total_s - m->prof.stall_s;
+    out->bytes_read  = (int64_t)ss.bytes_read + m->prof.lmhead_bytes;
+    out->device_s    = ss.load_seconds;
+    out->steps       = m->prof.steps;
+    out->logit_steps = m->prof.logit_steps;
+
+    snprintf(out->notes, sizeof out->notes,
+             "%d/%d layers pinned (%.0f%% hit rate), lm head %s, "
+             "embedding %.1fs, layers %.1fs, lm head %.1fs",
+             ss.npin, ss.nblocks,
+             ss.nblocks ? 100.0 * ss.npin / ss.nblocks : 0.0,
+             m->lm_resident ? "resident" : "streamed",
+             m->prof.embed_s, m->prof.layer_s, m->prof.lmhead_s);
 }
 
 static const float *qwen3_logits(const EngModel *m, int *n_vocab)
@@ -639,5 +826,6 @@ const EngModelBackend eng_backend_qwen3 = {
     .state_bytes   = qwen3_state_bytes,
     .decode        = qwen3_decode,
     .logits        = qwen3_logits,
+    .stats         = qwen3_stats,
     .caps          = qwen3_caps
 };

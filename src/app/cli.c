@@ -285,11 +285,22 @@ static int cmd_run(const char *path, const Opts *o)
     int tok_id = ids[0];
 
     for (; pos < ctx - 1; pos++) {
+        /* LOGITS ONLY WHERE THEY ARE READ. While consuming the prompt the next token is
+         * already known, so the distribution at that position is computed and discarded.
+         * On this model that is a 151,936-row projection and, with a streamed LM head,
+         * a 510 MB read -- per prompt token. The sequence state is updated either way,
+         * so the KV cache and every later position are unaffected. */
+        const int last_prompt = (pos + 1 >= n);
+        const uint32_t fl = last_prompt ? ENG_DEC_LOGITS : 0u;
+
         const double t0 = now_s();
-        if (b->decode(m, st, tok_id, pos) != 0) { fprintf(stderr, "\ndecode failed\n"); break; }
+        if (b->decode(m, st, tok_id, pos, fl) != 0) {
+            fprintf(stderr, "\ndecode failed\n");
+            break;
+        }
         const double dt = now_s() - t0;
 
-        if (pos + 1 < n) {
+        if (!last_prompt) {
             /* Still consuming the prompt: the next input is known. */
             prefill_s += dt;
             tok_id = ids[pos + 1];
@@ -320,6 +331,29 @@ static int cmd_run(const char *path, const Opts *o)
     printf("\n%d generated in %.1f s", produced, decode_s);
     if (decode_s > 0.0 && produced) printf(" (%.2f tok/s)", produced / decode_s);
     printf("\n");
+
+    /* WHERE THE TIME WENT, in wall seconds throughout, and through the interface rather
+     * than by asking a named backend -- see EngRunStats. `stalled` is what the decode
+     * waited for; the device time is what the transfer cost. The gap between them is
+     * what prefetching hid. */
+    if ((o->verbose || o->bench) && b->stats) {
+        EngRunStats rs;
+        b->stats(m, &rs);
+
+        printf("\nwhere the time went (wall)\n");
+        printf("  total       : %7.1f s over %d step%s, %d with logits\n",
+               rs.total_s, rs.steps, rs.steps == 1 ? "" : "s", rs.logit_steps);
+        printf("  stalled     : %7.1f s waiting for weights\n", rs.io_stall_s);
+        printf("  compute     : %7.1f s\n", rs.compute_s);
+        printf("  weights     : %.2f GB read in %.1f s of device time (%.0f MB/s)\n",
+               (double)rs.bytes_read / 1e9, rs.device_s,
+               rs.device_s > 0 ? (double)rs.bytes_read / 1e6 / rs.device_s : 0.0);
+        if (rs.notes[0]) printf("  detail      : %s\n", rs.notes);
+        if (rs.total_s > 0.0)
+            printf("  verdict     : %.0f%% waiting on storage, %.0f%% computing\n",
+                   100.0 * rs.io_stall_s / rs.total_s,
+                   100.0 * rs.compute_s / rs.total_s);
+    }
 
     b->state_destroy(st);
     b->destroy(m);

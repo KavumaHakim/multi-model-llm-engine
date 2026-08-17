@@ -291,7 +291,9 @@ int main(int argc, char **argv)
     for (int t = 0; t < ntok; t++) {
         cmp.pos = t;
         const clock_t t0 = clock();
-        rc = b->decode(m, st, g_tok[t], t);
+        /* Logits at every position: the golden records them per step, and this test is
+         * about numerical agreement rather than speed. */
+        rc = b->decode(m, st, g_tok[t], t, ENG_DEC_LOGITS);
         const double secs = (double)(clock() - t0) / CLOCKS_PER_SEC;
         if (rc != 0) break;
         printf("  token %d (id %6d): %d tensors, worst rel %.3e (%s)  [%.1f s cpu]\n",

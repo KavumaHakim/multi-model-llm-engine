@@ -128,10 +128,12 @@ static int64_t toy_state_bytes(const EngModel *m, int context)
     return (int64_t)context * TOY_HIDDEN * (int64_t)sizeof(float);
 }
 
-static int toy_decode(EngModel *m, EngSeqState *s, int token, int pos)
+static int toy_decode(EngModel *m, EngSeqState *s, int token, int pos, uint32_t flags)
 {
     if (!m || !s || pos < 0 || pos >= s->context) return -1;
     if (token < 0 || token >= TOY_VOCAB) return -1;
+    /* The state update happens either way; only the logits are optional. */
+    const int want_logits = (flags & ENG_DEC_LOGITS) != 0;
 
     /* Write per-position state, then produce logits that depend on both the token and
      * the position, so a test can tell a real decode from a stub. */
@@ -139,8 +141,10 @@ static int toy_decode(EngModel *m, EngSeqState *s, int token, int pos)
         s->k[(size_t)pos * TOY_HIDDEN + i] = (float)(token + i);
     if (pos + 1 > s->n_seen) s->n_seen = pos + 1;
 
-    for (int v = 0; v < TOY_VOCAB; v++) m->logits[v] = 0.0f;
-    m->logits[(token + 1) % TOY_VOCAB] = 1.0f + (float)pos;
+    if (want_logits) {
+        for (int v = 0; v < TOY_VOCAB; v++) m->logits[v] = 0.0f;
+        m->logits[(token + 1) % TOY_VOCAB] = 1.0f + (float)pos;
+    }
     return 0;
 }
 
@@ -413,7 +417,7 @@ static void test_toy_execution(void)
     int argmax_ok = 1;
     for (int pos = 0; pos < 5; pos++) {
         const int tok = pos * 3 + 1;
-        if (b->decode(m, s, tok, pos) != 0) { argmax_ok = 0; break; }
+        if (b->decode(m, s, tok, pos, ENG_DEC_LOGITS) != 0) { argmax_ok = 0; break; }
         int nv = 0;
         const float *lg = b->logits(m, &nv);
         if (!lg || nv != TOY_VOCAB) { argmax_ok = 0; break; }
@@ -426,11 +430,11 @@ static void test_toy_execution(void)
 
     /* pos is an argument rather than hidden state, so a rewind is expressible. That is
      * what speculative decoding and beam search need. */
-    ok(b->decode(m, s, 4, 2) == 0, "decode can rewind to an earlier position",
+    ok(b->decode(m, s, 4, 2, ENG_DEC_LOGITS) == 0, "decode can rewind to an earlier position",
        "pos is explicit, not an internal counter");
 
-    ok(b->decode(m, s, 4, 9999) != 0, "decode refuses a position past the context", NULL);
-    ok(b->decode(m, s, -1, 0) != 0, "decode refuses an invalid token", NULL);
+    ok(b->decode(m, s, 4, 9999, ENG_DEC_LOGITS) != 0, "decode refuses a position past the context", NULL);
+    ok(b->decode(m, s, -1, 0, ENG_DEC_LOGITS) != 0, "decode refuses an invalid token", NULL);
 
     b->state_destroy(s);
     b->destroy(m);
