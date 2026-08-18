@@ -28,10 +28,20 @@
  * does not depend on residency: the same kernel sees the same bytes in the same order
  * regardless of how they arrived.
  *
- * THE BUDGETS are chosen to force structurally different plans, not merely different
- * numbers: one where most layers pin, one where few do, and one at the floor where the
- * streamer runs with a single ring slot and the asynchronous reader is disabled
- * entirely. If those three agree bit for bit, residency is not affecting the result.
+ * THE BUDGETS are derived from the host and chosen to force structurally different
+ * plans, not merely different numbers: one where most layers pin, one where fewer do,
+ * and one at the floor. Measured on the development machine those come out at 13, 7 and
+ * ZERO pinned layers -- the last streams every weight of the model on every token. If
+ * those agree bit for bit, residency is not affecting the result.
+ *
+ * WHAT THIS DOES NOT REACH, stated because the header once claimed it did: the
+ * single-ring-slot path, where the asynchronous reader is disabled because it would
+ * otherwise read over the block being computed on. That configuration is not reachable
+ * through the planner on a host like this one. The memory plan's safety reserve has a
+ * 768 MB floor, so the smallest viable budget is around 1.1 GB, and by then the weight
+ * budget still affords two ring slots. The two-slot rule is covered instead by
+ * tests/unit/test_streamer.c, which constructs the one-slot case directly and asserts
+ * the reader stays off.
  *
  * SKIPS, LOUDLY, without a model. This needs the real GGUF; GGUF_MODEL names it. A
  * silent skip would let the gate rot.
@@ -162,13 +172,50 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    /* Structurally different plans, not just different numbers. See the header. */
+    /* THE BUDGETS ARE DERIVED FROM THE HOST, not hardcoded.
+     *
+     * The first version of this test asked for 6 GB, 2400 MB and 1100 MB. On the
+     * development machine -- 3.8 GB total, 3.37 GB available -- the 6 GB arm cannot be
+     * satisfied at all: it would exhaust RAM and thrash a 1 GB swap, and an arm that
+     * dies proves nothing about equivalence. Hardcoding budgets makes a test that
+     * passes only on the machine it was written on, which is worse than useless in a
+     * repository other people clone.
+     *
+     * So the top arm is whatever this host can actually afford, and the others are
+     * spaced beneath it. What the test REQUIRES is not any particular number but that
+     * the arms end up with different plans, which is asserted below -- if a host is too
+     * small to produce a spread, that shows up as a failed assertion rather than a
+     * false pass. */
+    EngHwInfo hw;
+    eng_hwinfo_detect(&hw);
+    int64_t avail = hw.ram_available > 0 ? hw.ram_available : (2048LL << 20);
+
+    int64_t hi = (int64_t)((double)avail * 0.75);
+    if (hi > (6000LL << 20)) hi = 6000LL << 20;   /* no point beyond the model size */
+    int64_t lo = 1100LL << 20;                    /* about the floor a 5 GB model allows */
+    if (hi < lo + (256LL << 20)) {
+        printf("  SKIP  this host has %.2f GB available; not enough spread between\n"
+               "        budgets to produce structurally different plans\n",
+               (double)avail / 1e9);
+        return 0;
+    }
+    int64_t mid = lo + (int64_t)((double)(hi - lo) * 0.55);
+
+    char lbl[3][64];
+    snprintf(lbl[0], sizeof lbl[0], "%lldM (most pinned)", (long long)(hi  >> 20));
+    snprintf(lbl[1], sizeof lbl[1], "%lldM (fewer pinned)", (long long)(mid >> 20));
+    snprintf(lbl[2], sizeof lbl[2], "%lldM (floor)",        (long long)(lo  >> 20));
+
     Arm arms[] = {
-        { 6000LL << 20, "6G  (most layers pinned)", NULL, 0, 0, 0, 0, 0 },
-        { 2400LL << 20, "2400M (few pinned)",       NULL, 0, 0, 0, 0, 0 },
-        { 1100LL << 20, "1100M (floor, 1 slot)",    NULL, 0, 0, 0, 0, 0 }
+        { hi,  lbl[0], NULL, 0, 0, 0, 0, 0 },
+        { mid, lbl[1], NULL, 0, 0, 0, 0, 0 },
+        { lo,  lbl[2], NULL, 0, 0, 0, 0, 0 }
     };
     const int narm = (int)(sizeof arms / sizeof arms[0]);
+
+    printf("  host: %.2f GB available; budgets %lldM / %lldM / %lldM\n\n",
+           (double)avail / 1e9,
+           (long long)(hi >> 20), (long long)(mid >> 20), (long long)(lo >> 20));
 
     for (int i = 0; i < narm; i++) {
         printf("  running %s ...\n", arms[i].label);

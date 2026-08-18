@@ -137,6 +137,19 @@ in-range weights, which is exactly the failure this is built to catch.
 **The container, structurally.** `data_start + Σ tensor bytes = 5,956,416 + 5,021,827,072
 = 5,027,783,488`, the file size exactly. Every block-size constant feeds that sum.
 
+**The same answer at every memory budget.** Every other test fixes one configuration and
+checks the arithmetic within it; this one varies the configuration and checks the
+arithmetic did not move. Three budgets producing structurally different plans — 13, 7 and
+**zero** pinned layers, the last streaming every weight on every token — compared on raw
+bits:
+
+```
+pinned 13 / 7 / 0        0 of 151,936 logits differ
+```
+
+Not the greedy token: an argmax is stable under small perturbations, so comparing tokens
+would pass on a run whose distribution had visibly moved.
+
 **K3, unchanged.** Two FNV1a hashes pin its kernel output and are checked on every commit.
 
 `scripts/verify.sh` runs the whole suite plus ASan, UBSan, ThreadSanitizer and a `-Werror`
