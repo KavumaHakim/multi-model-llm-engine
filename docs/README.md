@@ -1,55 +1,38 @@
 # Documentation
 
-## Start here
+## This project
 
 | | |
 |---|---|
-| [QUICKSTART.md](QUICKSTART.md) | from nothing to generated text |
-| [TUNING.md](TUNING.md) | choosing a memory budget, one decision dominates |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | the generic runtime and the backend seam |
+| [adding-a-model.md](adding-a-model.md) | adding an architecture, written from what Qwen3 cost |
+| [extending.md](extending.md) | adding a quantization format, or a CPU kernel |
+| [PERFORMANCE.md](PERFORMANCE.md) | measured figures, two machines, kept apart |
+| [ROADMAP.md](ROADMAP.md) | what is next, with the reasoning |
+| [qwen3-model-facts.md](qwen3-model-facts.md) | Qwen3-8B as read from the GGUF, not from documentation |
 
-## Reference
-
-| | |
-|---|---|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | how the model maps onto the code |
-| [API.md](API.md) | the C interface, for embedding the engine |
-| [PERFORMANCE.md](PERFORMANCE.md) | the memory ladder, measured, with its noise floor |
-| [TESTING.md](TESTING.md) | what each gate proves |
-| [BENCHMARKING.md](BENCHMARKING.md) | how to measure without fooling yourself |
-| [ROADMAP.md](ROADMAP.md) | what is missing, in priority order |
-| [data/](data/) | the raw measurement output every table is transcribed from |
-
-## Upstream material
+## How this came about
 
 | | |
 |---|---|
-| [kimi-k3-tech-report.pdf](kimi-k3-tech-report.pdf) | the model's technical report, as published |
+| [architecture-report.md](architecture-report.md) | the audit of kimi-k3-in-c that shaped the design |
+| [baseline-m0.md](baseline-m0.md) | the pre-refactor K3 baseline, and the invariants held to since |
+| [README-kimi-k3.md](README-kimi-k3.md) | upstream's README, verbatim |
 
-Reproduced for reference; it remains the property of its authors. Every architectural
-claim in [ARCHITECTURE.md](ARCHITECTURE.md) cites the section of this report it comes
-from, so the two can be checked against each other.
+## Kimi K3 specifics
 
-## The three claims worth checking first
+These predate the refactor and describe the K3 engine as upstream shipped it. The
+subsystems they refer to are now generic, but the K3 *backend* still behaves as described,
+and its execution path is still the original CLI.
 
-If you are evaluating whether this project is worth your time, these are the load-bearing
-claims and where each is substantiated:
+| | |
+|---|---|
+| [architecture-kimi-k3.md](architecture-kimi-k3.md) | how K3 maps onto the codebase |
+| [QUICKSTART.md](QUICKSTART.md) | running K3 from nothing |
+| [TUNING.md](TUNING.md) | choosing a K3 memory budget |
+| [API.md](API.md) | the K3 C API |
+| [TESTING.md](TESTING.md) | the test suite as it stood at M0 |
+| [BENCHMARKING.md](BENCHMARKING.md) | the benchmark harness |
 
-1. **A 2.78T-parameter model runs in 8 GB of RAM.**
-   [PERFORMANCE.md](PERFORMANCE.md), twelve budgets, measured peak RSS at each.
-   Raw: [data/memory-ladder.tsv](data/memory-ladder.tsv).
-
-2. **Output is byte-identical across memory budgets.** Memory buys speed, not
-   capability. [PERFORMANCE.md](PERFORMANCE.md), and `examples/02-memory-budgets.sh`
-   reproduces it in three runs. The `ids` column of
-   [data/memory-ladder.tsv](data/memory-ladder.tsv) is the claim in raw form: twelve
-   rows, one identical token sequence.
-
-3. **The engine matches a reference implementation exactly.** Teacher forcing, greedy
-   decode, and incremental decode, on a model with the released tensor graph.
-   [TESTING.md](TESTING.md); `make test` runs it in seconds with no weights.
-
-Claims about *speed* carry a caveat that [PERFORMANCE.md](PERFORMANCE.md) states up
-front: run-to-run variance on identical configurations is 33%
-([data/replication.tsv](data/replication.tsv)), so single-sample differences below that
-are not effects. Claims about *output* carry no such caveat, those are exact, and they
-are counts rather than stopwatch readings.
+For the current engine use `./bin/engine --help`; for the current test surface see
+`scripts/verify.sh`, which is what every milestone is gated on.

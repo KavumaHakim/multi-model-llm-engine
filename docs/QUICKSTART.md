@@ -1,5 +1,10 @@
 # Quickstart
 
+> **Scope: Kimi K3.** This document predates the multi-model refactor and describes the
+> K3 engine as upstream shipped it. For the current runtime see [ARCHITECTURE.md](ARCHITECTURE.md);
+> for the current CLI run `./bin/engine --help`.
+
+
 From nothing to generated text.
 
 ## 1. Check the machine

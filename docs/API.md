@@ -1,5 +1,10 @@
 # C API
 
+> **Scope: Kimi K3.** This document predates the multi-model refactor and describes the
+> K3 engine as upstream shipped it. For the current runtime see [ARCHITECTURE.md](ARCHITECTURE.md);
+> for the current CLI run `./bin/engine --help`.
+
+
 For embedding the engine rather than using the `k3` binary. The public surface is
 `include/k3/k3.h` and `include/k3/k3_cfg.h`.
 

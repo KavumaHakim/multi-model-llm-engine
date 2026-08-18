@@ -1,5 +1,10 @@
 # Tuning
 
+> **Scope: Kimi K3.** This document predates the multi-model refactor and describes the
+> K3 engine as upstream shipped it. For the current runtime see [ARCHITECTURE.md](ARCHITECTURE.md);
+> for the current CLI run `./bin/engine --help`.
+
+
 ## The short version
 
 1. Run `./scripts/k3-doctor.sh` and use the preset it names.

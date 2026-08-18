@@ -193,11 +193,15 @@ Two results worth recording because they were counter-intuitive:
 | | |
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | how the pieces fit |
+| [docs/adding-a-model.md](docs/adding-a-model.md) | **adding an architecture**, written from what Qwen3 cost |
+| [docs/extending.md](docs/extending.md) | adding a quantization format, or a CPU kernel |
+| [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | measured figures, two machines, kept apart |
 | [docs/architecture-report.md](docs/architecture-report.md) | the audit of upstream that shaped this design |
 | [docs/qwen3-model-facts.md](docs/qwen3-model-facts.md) | Qwen3-8B as measured from the GGUF, not from documentation |
 | [docs/baseline-m0.md](docs/baseline-m0.md) | the pre-refactor K3 baseline |
-| [docs/TESTING.md](docs/TESTING.md) | what is checked and how |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | what is next, with the reasoning |
+
+Full index: [docs/README.md](docs/README.md).
 
 ---
 

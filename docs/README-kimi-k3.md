@@ -1,3 +1,14 @@
+<!-- PRESERVED VERBATIM -->
+
+> **This is kimi-k3-in-c's README, kept unchanged for attribution.** It describes that
+> project, not this one — see [../README.md](../README.md).
+>
+> Its links are relative to the repository root it shipped in, so they do not resolve
+> from `docs/`. Its figures (`docs/images/*.png`) were never part of the source
+> distribution and are not in this repository either. Both are left as-is rather than
+> rewritten, because editing another project's document to fit our layout would stop it
+> being the verbatim copy the NOTICE claims it is.
+
 <div align="center">
 
 <h1>kimi-k3-in-c</h1>

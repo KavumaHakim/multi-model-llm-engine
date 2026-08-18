@@ -71,7 +71,7 @@ statistic here because interference only ever makes a run slower, so the fastest
 observed run is the least contaminated and the most reproducible.
 
 `scripts/bench-threads.sh` implements this. Raw data:
-[`baseline/noise-floor.csv`](../baseline/noise-floor.csv).
+[`baseline/thread-scaling.csv`](../baseline/thread-scaling.csv).
 
 ### A correction this discipline caught immediately
 

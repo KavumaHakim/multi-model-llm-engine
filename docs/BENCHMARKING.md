@@ -1,5 +1,10 @@
 # Benchmarking
 
+> **Scope: Kimi K3.** This document predates the multi-model refactor and describes the
+> K3 engine as upstream shipped it. For the current runtime see [ARCHITECTURE.md](ARCHITECTURE.md);
+> for the current CLI run `./bin/engine --help`.
+
+
 ## The one rule
 
 **The measured run-to-run spread on an identical configuration is 33%.** Three runs of

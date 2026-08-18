@@ -1,5 +1,10 @@
 # Testing
 
+> **Scope: Kimi K3.** This document predates the multi-model refactor and describes the
+> K3 engine as upstream shipped it. For the current runtime see [ARCHITECTURE.md](ARCHITECTURE.md);
+> for the current CLI run `./bin/engine --help`.
+
+
 Every test in `make test` runs **without model weights**. The checkpoint is 1.56 TB; if
 correctness depended on having it, correctness would not get checked.
 
