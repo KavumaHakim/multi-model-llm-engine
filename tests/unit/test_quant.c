@@ -404,6 +404,97 @@ static void test_matmul(void)
     free(W); free(S); free(x); free(y);
 }
 
+/* ------------------------------------------- scalar vs AVX2, on raw bits -- */
+
+int    eng_kquant_avx2_compiled(void);
+int    eng_cpu_has_avx2(void);
+double eng_q4_k_dot_row_avx2(const void *w, const float *x, int n);
+double eng_q6_k_dot_row_avx2(const void *w, const float *x, int n);
+double eng_q4_k_dot_row_ref (const void *w, const void *scales, const float *x, int n);
+double eng_q6_k_dot_row_ref (const void *w, const void *scales, const float *x, int n);
+
+/* THE GATE THAT MAKES VECTORISING THESE SAFE.
+ *
+ * quant.h requires every implementation of a kernel to agree with the reference
+ * exactly, and that requirement is why q4_k.c and q6_k.c were restructured into a
+ * four-lane accumulator tree rather than a serial sum: a serial chain cannot be
+ * vectorised without changing the summation order.
+ *
+ * Compared on RAW BITS, not to a tolerance. A tolerance would pass on a vector path
+ * that is merely close, and merely close is what breaks the promise that an answer does
+ * not depend on which machine produced it. Every widening conversion in the AVX2 path
+ * (u8->i32, i32->f64, f32->f64) is exact and every product is an IEEE fused
+ * multiply-add in double on both sides, so exact agreement is achievable rather than
+ * aspirational -- if it fails, something really is different. */
+static void test_avx2_bit_identity(void)
+{
+    printf("\n== k-quant scalar vs AVX2, bit for bit ==\n");
+
+    if (!eng_kquant_avx2_compiled() || !eng_cpu_has_avx2()) {
+        printf("  SKIP  no AVX2 on this host; nothing to compare against\n");
+        return;
+    }
+
+    /* Several row widths, all whole superblocks: 256 is one block, 4096 is Qwen3's
+     * hidden width, 12288 its FFN width. */
+    static const int LENS[] = { 256, 512, 4096, 12288 };
+
+    for (int which = 0; which < 2; which++) {
+        const EngDType dt = which ? ENG_DT_Q6_K : ENG_DT_Q4_K;
+        const EngQuantOps *q = eng_quant_ops(dt);
+        if (!q) { ok(0, "ops present", eng_dtype_name(dt)); continue; }
+
+        int bad = 0, tried = 0;
+        double worst = 0.0;
+        for (size_t i = 0; i < sizeof LENS / sizeof *LENS; i++) {
+            const int N = LENS[i];
+            unsigned char *w = NULL, *s = NULL;
+            if (build_row(dt, N, &w, &s) != 0) continue;
+            float *x = (float *)malloc((size_t)N * sizeof *x);
+            for (int j = 0; j < N; j++) x[j] = frand();
+
+            const double r = which ? eng_q6_k_dot_row_ref(w, NULL, x, N)
+                                   : eng_q4_k_dot_row_ref(w, NULL, x, N);
+            const double v = which ? eng_q6_k_dot_row_avx2(w, x, N)
+                                   : eng_q4_k_dot_row_avx2(w, x, N);
+            tried++;
+            if (memcmp(&r, &v, sizeof r) != 0) {
+                bad++;
+                const double e = fabs(r - v) / (fabs(r) + 1e-12);
+                if (e > worst) worst = e;
+            }
+            free(w); free(s); free(x);
+        }
+
+        char d[128];
+        snprintf(d, sizeof d, "%s: %d widths, %d differ%s", q->name, tried, bad,
+                 bad ? "" : " (exact)");
+        ok(bad == 0 && tried > 0, "AVX2 dot is bit-identical to the reference", d);
+        if (bad) {
+            snprintf(d, sizeof d, "worst relative gap %.3e", worst);
+            printf("        %s\n", d);
+        }
+    }
+
+    /* And the dispatching entry point must be the AVX2 one here, or the check above
+     * proved something about code that never runs. */
+    {
+        const EngQuantOps *q = eng_quant_ops(ENG_DT_Q4_K);
+        unsigned char *w = NULL, *s = NULL;
+        const int N = 4096;
+        if (q && build_row(ENG_DT_Q4_K, N, &w, &s) == 0) {
+            float *x = (float *)malloc((size_t)N * sizeof *x);
+            for (int j = 0; j < N; j++) x[j] = frand();
+            const double disp = q->dot_row(w, s, x, N);
+            const double avx  = eng_q4_k_dot_row_avx2(w, x, N);
+            ok(memcmp(&disp, &avx, sizeof disp) == 0,
+               "dot_row dispatches to AVX2 on this host",
+               "otherwise the comparison above tests dead code");
+            free(w); free(s); free(x);
+        }
+    }
+}
+
 int main(void)
 {
     printf("quantization: registry, layout, and the accuracy contract\n\n");
@@ -412,6 +503,7 @@ int main(void)
     test_accuracy_contract();
     test_size_agreement();
     test_matmul();
+    test_avx2_bit_identity();
 
     printf("\n%d checks, %d failures\n", checks, fails);
     if (fails) { printf("QUANT TESTS FAILED\n"); return 1; }

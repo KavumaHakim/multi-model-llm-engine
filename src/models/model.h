@@ -109,6 +109,17 @@ typedef struct {
     double  device_s;        /* time inside the read loop: a device rate         */
     int     steps;
     int     logit_steps;     /* steps that produced a distribution               */
+
+    /* How the weights were actually configured. Architecture-neutral: any backend that
+     * streams has a resident prefix, a ring, and either an overlapping reader or not.
+     *
+     * Reported rather than inferred because a test that varies the memory budget needs
+     * to confirm the budgets produced DIFFERENT plans -- three runs agreeing because
+     * they all chose the same configuration would prove nothing. */
+    int     pinned_blocks;   /* weight blocks held for the whole run             */
+    int     ring_slots;      /* slots the streamed remainder cycles through      */
+    int     async_reader;    /* 1 when reads overlap compute                     */
+
     char    notes[160];      /* one line the backend wants surfaced              */
 } EngRunStats;
 

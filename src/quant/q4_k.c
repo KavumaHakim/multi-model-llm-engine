@@ -41,6 +41,7 @@
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define QK_K        256
@@ -110,7 +111,7 @@ static void q4_k_dequant_row(float *out, const void *w, const void *scales, int 
  *
  * Accumulating in double throughout, and per sub-block rather than per element, so the
  * two terms combine at the same magnitude. */
-static double q4_k_dot_row(const void *w, const void *scales, const float *x, int n)
+double eng_q4_k_dot_row_ref(const void *w, const void *scales, const float *x, int n)
 {
     (void)scales;
     const uint8_t *blk = (const uint8_t *)w;
@@ -137,21 +138,63 @@ static double q4_k_dot_row(const void *w, const void *scales, const float *x, in
             const double d2 = d * sc, m2 = dmin * m;
 
             const uint8_t *q = qs + (size_t)(j / 64) * 32;
-            double s1 = 0.0, s2 = 0.0;   /* sum q*x   */
-            double t1 = 0.0, t2 = 0.0;   /* sum x     */
-            for (int l = 0; l < 32; l++) {
-                const double xa = xb[j + l], xb2 = xb[j + 32 + l];
-                s1 += (double)(q[l] & 0x0F) * xa;
-                t1 += xa;
-                s2 += (double)(q[l] >> 4) * xb2;
-                t2 += xb2;
+            /* FOUR ACCUMULATOR LANES, not one running sum, and the shape is the
+             * contract rather than an optimisation.
+             *
+             * A serial `s += q*x` chain cannot be vectorised without changing the
+             * summation order, and quant.h requires every implementation of a kernel to
+             * agree with the reference EXACTLY. So the reference is written in the shape
+             * a 4-wide double register reproduces: lane k accumulates elements
+             * l = 4i + k, then the lanes fold as (0+1)+(2+3).
+             *
+             * src/quant/kquant_avx2.c mirrors this lane for lane, and
+             * tests/unit/test_quant.c compares the two on raw bits. The four lanes also
+             * break the dependency chain a single accumulator would impose, which is
+             * worth something on its own. */
+            double s1[4] = { 0 }, s2[4] = { 0 };   /* sum q*x */
+            double t1[4] = { 0 }, t2[4] = { 0 };   /* sum x   */
+            for (int l = 0; l < 32; l += 4) {
+                for (int k = 0; k < 4; k++) {
+                    const double xa = xb[j + l + k];
+                    const double xc = xb[j + 32 + l + k];
+                    /* fma, not `+=`: the vector path uses _mm256_fmadd_pd, which rounds
+                     * once. With -ffp-contract=off a scalar `s += a*b` rounds twice and
+                     * the two paths diverge in the last bits. */
+                    s1[k] = fma((double)(q[l + k] & 0x0F), xa, s1[k]);
+                    t1[k] += xa;
+                    s2[k] = fma((double)(q[l + k] >> 4), xc, s2[k]);
+                    t2[k] += xc;
+                }
             }
-            acc += d1 * s1 - m1 * t1;
-            acc += d2 * s2 - m2 * t2;
+#define RED4(a) (((a)[0] + (a)[1]) + ((a)[2] + (a)[3]))
+            acc += d1 * RED4(s1) - m1 * RED4(t1);
+            acc += d2 * RED4(s2) - m2 * RED4(t2);
+#undef RED4
             is += 2;
         }
     }
     return acc;
+}
+
+/* Runtime dispatch. The AVX2 path is bit-identical to the reference above -- see
+ * kquant_avx2.c and the raw-bit comparison in tests/unit/test_quant.c -- so which one
+ * runs is purely a speed decision and can never change an answer. */
+int    eng_kquant_avx2_compiled(void);
+int    eng_cpu_has_avx2(void);         /* kernels/kernel_impl.h */
+double eng_q4_k_dot_row_avx2(const void *w, const float *x, int n);
+double eng_q4_k_dot_row_ref (const void *w, const void *scales, const float *x, int n);
+
+static double q4_k_dot_row(const void *w, const void *scales, const float *x, int n)
+{
+    (void)scales;
+    /* ENG_KQ_SCALAR=1 forces the reference. The vector path is bit-identical, so
+     * this changes speed and nothing else -- which is what lets the A/B run on one
+     * binary rather than two builds that differ in more than the kernel. */
+    static int scalar_only = -1;
+    if (scalar_only < 0) scalar_only = getenv("ENG_KQ_SCALAR") ? 1 : 0;
+    if (!scalar_only && eng_kquant_avx2_compiled() && eng_cpu_has_avx2())
+        return eng_q4_k_dot_row_avx2(w, x, n);
+    return eng_q4_k_dot_row_ref(w, scales, x, n);
 }
 
 static int64_t q4_k_row_bytes(int n)

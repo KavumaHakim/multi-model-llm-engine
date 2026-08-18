@@ -43,6 +43,7 @@
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define QK_K        256
@@ -88,7 +89,7 @@ static void q6_k_dequant_row(float *out, const void *w, const void *scales, int 
  * no offset term, unlike Q4_K. The eight scale groups per half are accumulated
  * separately and combined at the end so each multiply happens once rather than per
  * element. */
-static double q6_k_dot_row(const void *w, const void *scales, const float *x, int n)
+double eng_q6_k_dot_row_ref(const void *w, const void *scales, const float *x, int n)
 {
     (void)scales;
     const uint8_t *blk = (const uint8_t *)w;
@@ -108,19 +109,34 @@ static double q6_k_dot_row(const void *w, const void *scales, const float *x, in
         for (int half = 0; half < 2; half++) {
             /* One partial sum per (scale index, quarter) pair: 2 scale indices x 4
              * quarters = 8, matching the 8 scales this half consumes. */
-            double part[8] = { 0 };
-            for (int l = 0; l < 32; l++) {
-                const int is = l / 16;
-                const int q1 = (int)((ql[l +  0] & 0x0F) | (((qh[l] >> 0) & 3) << 4)) - 32;
-                const int q2 = (int)((ql[l + 32] & 0x0F) | (((qh[l] >> 2) & 3) << 4)) - 32;
-                const int q3 = (int)((ql[l +  0] >>   4) | (((qh[l] >> 4) & 3) << 4)) - 32;
-                const int q4 = (int)((ql[l + 32] >>   4) | (((qh[l] >> 6) & 3) << 4)) - 32;
-                part[is + 0] += (double)q1 * xb[l +  0];
-                part[is + 2] += (double)q2 * xb[l + 32];
-                part[is + 4] += (double)q3 * xb[l + 64];
-                part[is + 6] += (double)q4 * xb[l + 96];
+            /* FOUR LANES PER PARTIAL, for the reason given in q4_k.c: a serial sum
+             * cannot be vectorised without changing the summation order, and quant.h
+             * requires implementations to agree exactly. Lane k of part[p] takes the
+             * elements at l = 4i + k, and the lanes fold as (0+1)+(2+3).
+             *
+             * `is` is constant across each run of 16 elements, so a 4-wide step never
+             * straddles two scale indices -- which is what makes the lane assignment
+             * well defined here at all. */
+            double part[8][4];
+            memset(part, 0, sizeof part);
+            for (int l = 0; l < 32; l += 4) {
+                const int is = l / 16;          /* constant over these 4 */
+                for (int k = 0; k < 4; k++) {
+                    const int i = l + k;
+                    const int q1 = (int)((ql[i +  0] & 0x0F) | (((qh[i] >> 0) & 3) << 4)) - 32;
+                    const int q2 = (int)((ql[i + 32] & 0x0F) | (((qh[i] >> 2) & 3) << 4)) - 32;
+                    const int q3 = (int)((ql[i +  0] >>   4) | (((qh[i] >> 4) & 3) << 4)) - 32;
+                    const int q4 = (int)((ql[i + 32] >>   4) | (((qh[i] >> 6) & 3) << 4)) - 32;
+                    part[is + 0][k] = fma((double)q1, (double)xb[i +  0], part[is + 0][k]);
+                    part[is + 2][k] = fma((double)q2, (double)xb[i + 32], part[is + 2][k]);
+                    part[is + 4][k] = fma((double)q3, (double)xb[i + 64], part[is + 4][k]);
+                    part[is + 6][k] = fma((double)q4, (double)xb[i + 96], part[is + 6][k]);
+                }
             }
-            for (int k = 0; k < 8; k++) acc += d * (double)sc[k] * part[k];
+            for (int k = 0; k < 8; k++) {
+                const double psum = ((part[k][0] + part[k][1]) + (part[k][2] + part[k][3]));
+                acc += d * (double)sc[k] * psum;
+            }
             xb += 128;
             ql += 64;
             qh += 32;
@@ -128,6 +144,27 @@ static double q6_k_dot_row(const void *w, const void *scales, const float *x, in
         }
     }
     return acc;
+}
+
+/* Runtime dispatch. The AVX2 path is bit-identical to the reference above -- see
+ * kquant_avx2.c and the raw-bit comparison in tests/unit/test_quant.c -- so which one
+ * runs is purely a speed decision and can never change an answer. */
+int    eng_kquant_avx2_compiled(void);
+int    eng_cpu_has_avx2(void);         /* kernels/kernel_impl.h */
+double eng_q6_k_dot_row_avx2(const void *w, const float *x, int n);
+double eng_q6_k_dot_row_ref (const void *w, const void *scales, const float *x, int n);
+
+static double q6_k_dot_row(const void *w, const void *scales, const float *x, int n)
+{
+    (void)scales;
+    /* ENG_KQ_SCALAR=1 forces the reference. The vector path is bit-identical, so
+     * this changes speed and nothing else -- which is what lets the A/B run on one
+     * binary rather than two builds that differ in more than the kernel. */
+    static int scalar_only = -1;
+    if (scalar_only < 0) scalar_only = getenv("ENG_KQ_SCALAR") ? 1 : 0;
+    if (!scalar_only && eng_kquant_avx2_compiled() && eng_cpu_has_avx2())
+        return eng_q6_k_dot_row_avx2(w, x, n);
+    return eng_q6_k_dot_row_ref(w, scales, x, n);
 }
 
 static int64_t q6_k_row_bytes(int n)

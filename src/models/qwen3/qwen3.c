@@ -786,6 +786,12 @@ static void qwen3_stats(const EngModel *m, EngRunStats *out)
     out->steps       = m->prof.steps;
     out->logit_steps = m->prof.logit_steps;
 
+    /* The configuration the plan actually produced, so a caller varying the memory
+     * budget can confirm the arms really differed rather than all landing on one plan. */
+    out->pinned_blocks = ss.npin;
+    out->ring_slots    = ss.nslot;
+    out->async_reader  = ss.async;
+
     snprintf(out->notes, sizeof out->notes,
              "%d/%d layers pinned (%.0f%% hit rate), lm head %s, "
              "embedding %.1fs, layers %.1fs, lm head %.1fs",
