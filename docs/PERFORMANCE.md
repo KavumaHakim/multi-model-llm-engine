@@ -1,8 +1,54 @@
 # Performance
 
-All figures measured on a single machine: AMD EPYC 7763, 124 vCPU (2×62, no SMT),
-228 GiB RAM, NVMe measured at 3.2 GB/s O_DIRECT, Ubuntu 24.04, GCC 13.3, AVX2 without
-AVX-512. Background auto-updates were disabled before measurement.
+**Two machines, and they are not comparable.** The Qwen3 section below was measured on
+the development laptop; every K3 table after it is upstream's, measured on a server.
+Reading a number from one against a number from the other says nothing.
+
+| | Qwen3 sections | K3 sections |
+|---|---|---|
+| CPU | Intel i5-6300U, 2 cores / 4 threads | AMD EPYC 7763, 124 vCPU, no SMT |
+| RAM | 7.86 GB (3.8 GB visible to WSL2) | 228 GiB |
+| storage | ext4 in WSL2 on a laptop SSD | NVMe at 3.2 GB/s O_DIRECT |
+
+K3 figures: AMD EPYC 7763, 124 vCPU (2×62, no SMT), 228 GiB RAM, NVMe measured at
+3.2 GB/s O_DIRECT, Ubuntu 24.04, GCC 13.3, AVX2 without AVX-512. Background
+auto-updates were disabled before measurement.
+
+## Qwen3-8B: the k-quant vector path
+
+Q4_K and Q6_K carry the whole Qwen3 compute path. Until M12 both were scalar. The
+A/B below runs on ONE binary at ONE budget (2400 MB), with `ENG_KQ_SCALAR=1` forcing
+the reference kernel — the vector path is bit-identical, so nothing but speed differs.
+
+Prompt "The capital of France is", 4 prompt tokens + 4 generated, 36 layers streamed,
+6 of 36 pinned.
+
+| | scalar | AVX2 | |
+|---|---:|---:|---|
+| compute | 97.8 s | **83.7 s** | **1.17×** |
+| prompt, 4 tokens | 67.4 s | 57.9 s | 1.16× |
+| generated, 4 tokens | 56.2 s | 54.7 s | 1.03× |
+| total | 123.6 s | 112.6 s | 1.10× |
+
+**Why the gain is 1.17× and not 3–4×.** The engine requires every implementation of a
+kernel to agree with its reference *bit for bit*, so the vector path accumulates in
+double: an AVX2 register holds **4 doubles against 8 floats**, which halves the
+available width before any other consideration. The remaining gap is the nibble
+unpacking and the affine term, which vectorise but do not disappear.
+
+That is a deliberate trade, and it is worth stating what buying it back would cost.
+Qwen3 declares `ENG_NUM_FAST` and makes no bit-identity claim; a float-accumulating
+variant could use the full 8-wide register. The quantization vtable has no numerical
+policy parameter today, so this is a design change rather than a tweak — recorded in
+[ROADMAP.md](ROADMAP.md) rather than done quietly.
+
+**Caveats on the I/O figures in that run.** `drop_caches` is attempted between arms but
+its failure is not fatal, and on this host the page cache holds a large fraction of a
+5 GB model in 3.8 GB of RAM. Device rates of 316 and 348 MB/s in the two arms are
+therefore *not* controlled, and are much higher than the 157 MB/s measured on a cold
+cache earlier. Compute time is the figure the kernel change should move, and it is the
+one quoted above. Single sample; see [the noise floor](#the-noise-floor).
+
 
 **Every table on this page is transcribed from raw output in [data/](data/).** The full
 machine capture is [data/environment.txt](data/environment.txt). Nothing here is quoted

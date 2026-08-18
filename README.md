@@ -153,8 +153,14 @@ At a 2400 MB budget, 6 of 36 layers pinned: **33.2 s per generated token**, with
 roughly 60% waiting on storage and 40% computing.
 
 This is an I/O-bound configuration by construction — 30 of 36 layers are read from disk on
-every token. The k-quant dot products are still scalar; vectorising them is the next
-substantial piece of work.
+every token.
+
+Vectorising the Q4_K and Q6_K dot products cut compute by **1.17×** (97.8 s → 83.7 s over
+8 tokens). The gain is smaller than a scalar-to-AVX2 change suggests because the engine
+requires implementations of a kernel to agree bit for bit, so the vector path accumulates
+in double — 4 doubles per register against 8 floats. Buying that width back for Qwen3,
+which makes no bit-identity claim, is the largest remaining compute lever and is item 1
+in [the roadmap](docs/ROADMAP.md).
 
 Two results worth recording because they were counter-intuitive:
 

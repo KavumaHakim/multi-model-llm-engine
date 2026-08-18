@@ -2,6 +2,42 @@
 
 Ordered by value, with the reasoning stated so the order can be argued with.
 
+## 1. A numerical policy for the quantization vtable
+
+The k-quant vector paths accumulate in double because quant.h requires every
+implementation of a kernel to agree with its reference bit for bit. That costs half the
+register width -- 4 doubles against 8 floats -- and measurement puts the resulting AVX2
+gain at 1.17x on compute rather than the 3-4x the change would otherwise suggest
+(docs/PERFORMANCE.md).
+
+K3 needs that guarantee: its claim is that output does not depend on the memory budget.
+Qwen3 declares ENG_NUM_FAST and needs no such thing. The kernels layer already takes
+numerical policy as a per-call parameter; the quantization vtable does not, so
+`dot_row` cannot express "fp32 is fine here". Threading it through would let Qwen3 use
+the full width while K3 keeps its exactness.
+
+This is the largest single lever left on compute, and it is a design change rather than
+a tweak, which is why it is written down instead of done quietly.
+
+## 2. docs/adding-a-model.md
+
+Required by the brief and still missing. It is also the only real test of whether the
+backend interface is usable by someone who did not write it.
+
+## 3. Migrating K3's forward pass onto the backend interface
+
+K3's storage, cache, streamer and quantization are already generic; its execution still
+runs through bin/k3. Deferred rather than forgotten: the 1.56 TB checkpoint cannot run
+on the development machine, so the work would be unverifiable here. Worth doing on a
+host that can execute it, and not before.
+
+## 4. Serving
+
+No HTTP API. Deliberately last: it is product surface, and everything above changes
+what would be served.
+
+## Inherited from kimi-k3-in-c, still open
+
 ## 1. Chunked prefill, the highest-value missing piece
 
 Prefill currently runs as a single forward pass over the whole prompt, and attention in
