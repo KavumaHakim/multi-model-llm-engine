@@ -20,6 +20,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "bpe.h"
+#include "chat.h"
 #include "gguf.h"
 #include "hwinfo.h"
 #include "kernel.h"
@@ -55,6 +56,14 @@ static void usage(void)
 "  engine run MODEL [options]\n"
 "        -p, --prompt TEXT       prompt (default: a short greeting)\n"
 "        -n, --tokens N          tokens to generate (default 16)\n"
+"        -s, --system TEXT       system message; implies --chat\n"
+"        --chat / --raw          apply the model's chat template, or do not. Default\n"
+"                                is to apply it when the model has one. WITHOUT it an\n"
+"                                instruct model CONTINUES your prompt rather than\n"
+"                                answering it.\n"
+"        --think                 let the model reason first, where its template\n"
+"                                supports it. Off by default: reasoning costs the same\n"
+"                                per token as the answer.\n"
 "        --memory SIZE           budget, e.g. 6G, 512M, or auto (default auto)\n"
 "        --threads N             worker threads (default: chosen from the model)\n"
 "        --context N             context length (default: the model's, capped to fit)\n"
@@ -148,6 +157,9 @@ static int cmd_inspect(const char *path)
 
 typedef struct {
     const char *prompt;
+    const char *system;
+    int chat;
+    int think;
     int   ntok;
     int64_t memory;
     int   threads, context, verbose, resident, bench;
@@ -158,12 +170,22 @@ static int parse_opts(int argc, char **argv, int start, Opts *o)
     memset(o, 0, sizeof *o);
     o->ntok = 16;
     o->prompt = "Hello, world";
+    o->system = NULL;
+    /* -1 = auto: use the template when the model has one. A model tuned for
+     * chat produces base-model continuations without it, which looks like a
+     * quality problem rather than a formatting one. */
+    o->chat = -1;
+    o->think = 0;
 
     for (int i = start; i < argc; i++) {
         const char *a = argv[i];
         const char *next = (i + 1 < argc) ? argv[i + 1] : NULL;
 
         if ((!strcmp(a, "-p") || !strcmp(a, "--prompt")) && next)        { o->prompt = next; i++; }
+        else if ((!strcmp(a, "-s") || !strcmp(a, "--system")) && next)   { o->system = next; i++; }
+        else if (!strcmp(a, "--chat"))                                   { o->chat = 1; }
+        else if (!strcmp(a, "--raw") || !strcmp(a, "--no-chat"))         { o->chat = 0; }
+        else if (!strcmp(a, "--think"))                                  { o->think = 1; }
         else if ((!strcmp(a, "-n") || !strcmp(a, "--tokens")) && next)   { o->ntok = atoi(next); i++; }
         else if (!strcmp(a, "--threads") && next)                        { o->threads = atoi(next); i++; }
         else if (!strcmp(a, "--context") && next)                        { o->context = atoi(next); i++; }
@@ -237,8 +259,14 @@ static int cmd_run(const char *path, const Opts *o)
      * for them to disagree about the vocabulary. */
     Gguf g;
     EngBpe *tok = NULL;
+    EngChat chat;
+    memset(&chat, 0, sizeof chat);
+    chat.family = ENG_CHAT_NONE;
     if (gguf_open(&g, path) == 0) {
         tok = eng_bpe_from_gguf(&g);
+        /* Detected while the container is still OPEN: the template is a pointer into
+         * its metadata, so doing this after the close would read freed memory. */
+        if (tok) eng_chat_detect(&chat, &g, tok);
         gguf_close(&g);
     }
     if (!tok) {
@@ -247,7 +275,33 @@ static int cmd_run(const char *path, const Opts *o)
     }
 
     int ids[4096];
-    int n = eng_bpe_encode(tok, o->prompt, -1, ids, (int)(sizeof ids / sizeof *ids), 1);
+    /* CHAT FORMATTING. Built as token IDS rather than a formatted string: the turn
+     * markers are single control tokens, and passing them through BPE would merge them
+     * into ordinary pieces so the model never sees the boundary it was tuned on. See
+     * src/tokenizer/chat.h. */
+    const int want_chat = (o->chat >= 0)     ? o->chat
+                        : (o->system != NULL) ? 1
+                        : (chat.family != ENG_CHAT_NONE);
+    if (o->system && o->chat == 0)
+        fprintf(stderr, "chat: --system is ignored with --raw\n");
+
+    int n = -1;
+    if (want_chat && chat.family != ENG_CHAT_NONE) {
+        n = eng_chat_build(&chat, tok, o->system, o->prompt, o->think,
+                           ids, (int)(sizeof ids / sizeof *ids));
+        if (n < 0)
+            fprintf(stderr, "chat: the formatted prompt does not fit; "
+                            "falling back to a plain continuation\n");
+        else if (o->verbose)
+            printf("chat template: %s%s\n", eng_chat_family_name(chat.family),
+                   (!o->think && chat.supports_think) ? " (reasoning suppressed)" : "");
+    } else if (want_chat) {
+        fprintf(stderr, "chat: this model has no template the engine implements; "
+                        "treating the prompt as a continuation\n");
+    }
+
+    if (n < 0)
+        n = eng_bpe_encode(tok, o->prompt, -1, ids, (int)(sizeof ids / sizeof *ids), 1);
     if (n < 0) { fprintf(stderr, "cannot encode the prompt\n"); eng_bpe_free(tok); return 1; }
     if (n == 0) { fprintf(stderr, "the prompt encoded to nothing\n"); eng_bpe_free(tok); return 1; }
 
@@ -315,9 +369,15 @@ static int cmd_run(const char *path, const Opts *o)
 
         if (best == eng_bpe_eos(tok)) break;
 
-        char piece[512];
-        const int pn = eng_bpe_decode_one(tok, best, piece, sizeof piece - 1);
-        if (pn > 0) { piece[pn] = '\0'; fputs(piece, stdout); fflush(stdout); }
+        /* Control tokens are STRUCTURE, not text. A chat-formatted run can emit one --
+         * <|im_start|> opening a turn the model invented -- and printing it would leak
+         * the turn markers into the answer. EOS already broke above; this covers the
+         * rest. The token is still fed back, so the model's own context is unchanged. */
+        if (!eng_bpe_is_special(tok, best)) {
+            char piece[512];
+            const int pn = eng_bpe_decode_one(tok, best, piece, sizeof piece - 1);
+            if (pn > 0) { piece[pn] = '\0'; fputs(piece, stdout); fflush(stdout); }
+        }
         if (o->verbose) fprintf(stderr, " [%.1fs]", dt);
 
         tok_id = best;

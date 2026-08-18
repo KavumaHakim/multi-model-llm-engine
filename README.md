@@ -51,15 +51,46 @@ on every commit.
 ## Quick start
 
 ```bash
-make                     # builds bin/engine and bin/k3
+make                     # bin/engine, bin/k3, and bin/libengine.a
 make test                # the correctness gate; needs no model weights
 
 ./bin/engine list                          # registered backends
 ./bin/engine inspect model.gguf            # architecture, cost, and the plan for this host
-./bin/engine run model.gguf -p "Hello" -n 32
+./bin/engine run model.gguf -p "What is the capital of France?"
+./bin/engine run model.gguf -s "You are terse." -p "Explain RoPE" -n 64
 ./bin/engine run model.gguf --memory 3G --threads 4 --context 2048
 ./bin/engine benchmark model.gguf --tokens 16
 ```
+
+The model's **chat template is applied by default** when it has one. Without it an
+instruct model *continues* your prompt rather than answering it — `--raw` gives that
+behaviour deliberately. Qwen3's template can also reason before answering; that is off by
+default (`--think` enables it) because the reasoning costs the same per token as the
+answer.
+
+## Using it as a library
+
+```c
+#include "engine.h"                 /* one header */
+
+EngHwInfo hw;  eng_hwinfo_detect(&hw);
+const EngModelBackend *b = eng_model_probe(path, NULL);
+EngModelFacts facts;  b->inspect(path, &facts);      /* reads no weights */
+EngPlan plan;  eng_plan(&plan, &hw, &facts, NULL);   /* decide before loading */
+EngModel *m = b->load(&lr);
+```
+
+```bash
+make && sudo make install
+cc myapp.c -o myapp -lengine -lm -fopenmp -pthread
+```
+
+`examples/minimal.c` is a complete program built by `make test` against the archive with
+a single `-I`, so the library's self-containment is gated rather than assumed.
+
+**One handle, one sequence, one thread.** libengine is synchronous and is not thread-safe
+for concurrent decoding — several models per process is fine, one model from several
+threads is not.
 
 `--memory auto` (the default) sizes a budget from what the OS reports as available,
 keeping the larger of 1 GB or 20% for the rest of the system. `inspect` explains what it

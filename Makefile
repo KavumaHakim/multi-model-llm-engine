@@ -105,7 +105,7 @@ GENERIC_SRC := src/tensor/dtype.c src/tensor/tensor.c \
                src/quant/quant.c src/quant/mxfp4.c src/quant/q8_0.c \
                src/quant/q4_k.c src/quant/q6_k.c src/quant/kquant_avx2.c \
                src/formats/gguf.c \
-               src/tokenizer/bpe.c
+               src/tokenizer/bpe.c src/tokenizer/chat.c
 GENERIC_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(GENERIC_SRC))
 
 # Model backends. NOT part of GENERIC_OBJ, and the distinction is the architecture
@@ -134,6 +134,21 @@ QUANT_OBJ := $(BUILD)/src/quant/quant.o $(BUILD)/src/quant/mxfp4.o \
 K3_OPS_OBJ := $(BUILD)/src/core/k3_ops.o $(QUANT_OBJ) \
               $(BUILD)/src/tensor/dtype.o $(BUILD)/src/kernels/kernel_avx2.o
 
+# ------------------------------------------------------------------------- library --
+# libengine.a is everything except a main(): the generic runtime, the model backends, and
+# the K3 support code the kimi backend still needs. Another project links this plus
+# include/engine.h and needs nothing from src/.
+#
+# The K3 objects are in here rather than in a separate archive because the kimi backend
+# references them, and splitting an archive along a dependency edge only moves the
+# problem to the linker.
+LIB_OBJ    := $(ENGINE_OBJ) $(BUILD)/src/io/k3_st.o
+LIB        := $(BIN)/libengine.a
+
+# The headers engine.h includes, directly or transitively. Installed flat because the
+# sources include one another unqualified, so a consumer wants a single -I.
+PUB_HEADERS := include/engine.h                src/runtime/hwinfo.h src/runtime/memory.h src/runtime/planner.h                src/tensor/dtype.h src/tensor/tensor.h                src/storage/storage.h src/storage/cache.h src/storage/streamer.h                src/formats/gguf.h                src/quant/quant.h                src/kernels/kernel.h                src/models/model.h                src/tokenizer/bpe.h src/tokenizer/chat.h
+
 CLI_SRC    := src/cli/k3_run.c
 CLI_BIN    := $(BIN)/k3
 
@@ -145,7 +160,7 @@ ENGINE_CLI_BIN := $(BIN)/engine
 # Tests that need no checkpoint. These run in CI on every push.
 UNIT_TESTS := test_ops test_cache test_st test_cfg test_tok scale_test k3_model \
               test_tensor test_cache_generic test_streamer test_planner test_kernels \
-              test_quant test_model test_streaming_equiv test_gguf
+              test_quant test_model test_chat test_streaming_equiv test_gguf
 # Tests that need real shards. Built and run by `make test-all` with SHARD_DIR set;
 # see the weights-test target below.
 WEIGHT_TESTS := test_expert test_real_layer
@@ -160,10 +175,10 @@ TOK_FILES  ?= $(HOME)/k3model
 # two concurrent `make test` runs cannot race on one filename and `make clean` removes it.
 
 # ---------------------------------------------------------------------------- targets --
-.PHONY: all test test-all bench portable debug asan ubsan format clean install help \
+.PHONY: all example test test-all bench portable debug asan ubsan format clean install help \
         tok cfg ops cache st oracle weights-test
 
-all: $(CLI_BIN) $(ENGINE_CLI_BIN)
+all: $(CLI_BIN) $(ENGINE_CLI_BIN) $(LIB)
 
 $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -223,7 +238,15 @@ $(BIN)/test_qwen3: tests/unit/test_qwen3.c $(MODEL_OBJ) $(GENERIC_OBJ) \
                    $(BUILD)/src/io/k3_st.o $(K3_OPS_OBJ) | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
-$(ENGINE_CLI_BIN): $(ENGINE_CLI_SRC) $(ENGINE_OBJ) $(BUILD)/src/io/k3_st.o | $(BIN)
+$(LIB): $(LIB_OBJ) | $(BIN)
+	@rm -f $@
+	$(AR) rcs $@ $(LIB_OBJ)
+	@echo "  $@  ($$(du -h $@ | cut -f1))"
+
+# The CLI links the LIBRARY, not a repeated object list. That is not tidiness: it means
+# every `make` proves the library is complete and self-contained, so a missing object
+# fails here rather than in someone else's project.
+$(ENGINE_CLI_BIN): $(ENGINE_CLI_SRC) $(LIB) | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
 $(BIN)/test_tokenizer: tests/unit/test_tokenizer.c $(BUILD)/src/tokenizer/bpe.o \
@@ -247,6 +270,9 @@ $(BIN)/test_gguf: tests/unit/test_gguf.c $(BUILD)/src/formats/gguf.o \
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
 $(BIN)/test_streaming_equiv: tests/unit/test_streaming_equiv.c $(ENGINE_OBJ) | $(BIN)
+	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+
+$(BIN)/test_chat: tests/unit/test_chat.c $(LIB) | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
 $(BIN)/test_quant: tests/unit/test_quant.c $(QUANT_OBJ) \
@@ -320,7 +346,12 @@ test: $(TEST_BINS)
 	@echo "== planner ==";           ./$(BIN)/test_planner
 	@echo "== cpu kernels ==";       ./$(BIN)/test_kernels
 	@echo "== quantization ==";      ./$(BIN)/test_quant
+# Builds against the ARCHIVE with only -Iinclude and the flattened public headers, the
+# way another project would. If an internal header leaked into the public surface, or an
+# object is missing from the archive, this fails and the CLI would not have noticed.
+	@echo "== library links standalone =="; $(MAKE) --no-print-directory example
 	@echo "== model backends ==";    ./$(BIN)/test_model
+	@echo "== chat template ==";     ./$(BIN)/test_chat
 	@echo "== streaming equivalence =="; ./$(BIN)/test_streaming_equiv
 	@echo "== gguf + k-quants ==";   ./$(BIN)/test_gguf tests/fixtures/gguf/golden.bin $(BUILD)
 	@echo "== cpu kernels (no -mavx2, runtime dispatch only) =="; \
@@ -397,12 +428,29 @@ format:
 # the two build systems are documented as interchangeable, so they must stay so.
 # third_party/json.h goes with them: k3_cfg.h includes it and exposes jval in its
 # signatures, so an installed k3_cfg.h without it does not compile.
-install: $(CLI_BIN)
+install: $(CLI_BIN) $(ENGINE_CLI_BIN) $(LIB)
 	install -d $(DESTDIR)$(PREFIX)/bin
 	install -m 755 $(CLI_BIN) $(DESTDIR)$(PREFIX)/bin/k3
+	install -m 755 $(ENGINE_CLI_BIN) $(DESTDIR)$(PREFIX)/bin/engine
+	install -d $(DESTDIR)$(PREFIX)/lib
+	install -m 644 $(LIB) $(DESTDIR)$(PREFIX)/lib/
+	install -d $(DESTDIR)$(PREFIX)/include/engine
+	install -m 644 include/engine.h $(DESTDIR)$(PREFIX)/include/
+# Every header engine.h pulls in, flattened into one directory. The sources include each
+# other unqualified ("planner.h", not "runtime/planner.h"), so a consumer needs one -I
+# rather than a dozen.
+	install -m 644 $(PUB_HEADERS) $(DESTDIR)$(PREFIX)/include/engine/
 	install -d $(DESTDIR)$(PREFIX)/include/k3
 	install -m 644 include/k3/*.h $(DESTDIR)$(PREFIX)/include/k3/
 	install -m 644 third_party/json.h $(DESTDIR)$(PREFIX)/include/k3/
+
+# A consumer's build, done the consumer's way: one -I for the public headers, one -L for
+# the archive, and no knowledge of src/.
+example: $(LIB) | $(BIN)
+	@install -d $(BUILD)/pubinc
+	@cp $(PUB_HEADERS) $(BUILD)/pubinc/
+	$(CC) -O2 -std=gnu99 $(WARN) -I$(BUILD)/pubinc examples/minimal.c 	      -o $(BIN)/example_minimal $(LIB) $(LDFLAGS)
+	@echo "  linked $(BIN)/example_minimal against $(LIB)"
 
 clean:
 	rm -rf $(BUILD) $(BIN)
